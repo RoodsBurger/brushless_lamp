@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Arduino build output
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Claude Code local settings (user-specific)
+.claude/settings.local.json
