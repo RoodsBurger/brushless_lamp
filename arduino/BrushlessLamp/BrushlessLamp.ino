@@ -225,70 +225,97 @@ void setup() {
     Serial.println("Ready.");
 }
 
+// Format a float as fixed-point integer parts to dodge ESP32-C3's soft-float
+// printf, which adds ~300 us per %.2f and stalls the FOC loop for several ms
+// when several args appear in one line.
+#define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
+#define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
+
 void loop() {
-    command.run();
+    // Spin in place rather than returning — arduino-esp32 runs loop() inside a
+    // FreeRTOS task that context-switches every ~2 s on single-core variants
+    // (S2/C3/C6), preempting us for ~4 ms. At 50 rad/s × 11 pp that's a full
+    // electrical cycle of frozen SVPWM, audible as a hard click. Known issue,
+    // SimpleFOC community fix. Reference: simplefoc/Arduino-FOC#292.
 
-    // DRV8313 actively reports a fault — halt immediately rather than wait
-    // for stall detection. Recovery happens on the next T command.
-    if (motor.enabled && driverFaulted()) {
-        Serial.println("nFAULT: DRV8313 fault asserted — halted");
-        haltMotor();
-    }
-
-    bool want_motion = fabs(target) > IDLE_TARGET_THRESH;
-    bool ramping_down = fabs(ramped_target) > IDLE_TARGET_THRESH;
+    static uint32_t prev_loop_us = 0;
+    static uint32_t max_loop_us  = 0;
     static uint32_t last_active_ms = 0;
     static uint32_t stall_start_ms = 0;
     static uint32_t enable_time_ms = 0;
+    static uint32_t last_print_ms  = 0;
 
-    if (want_motion) {
-        last_active_ms = millis();
+    while (true) {
+        uint32_t now_us = micros();
+        if (prev_loop_us != 0) {
+            uint32_t dt = now_us - prev_loop_us;
+            if (dt > max_loop_us) max_loop_us = dt;
+        }
+        prev_loop_us = now_us;
 
-        if (!motor.enabled) {
-            // Coming out of idle or halt — full nSLEEP reset to clear any latched fault.
-            resetDriver();
-            enable_time_ms = millis();
-            stall_start_ms = 0;
+        command.run();
+
+        if (motor.enabled && driverFaulted()) {
+            Serial.println("nFAULT: DRV8313 fault asserted — halted");
+            haltMotor();
         }
 
-        // Skip stall detection during the accelerate-from-stop warmup.
-        bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
-        if (!in_warmup && fabs(motor.shaft_velocity) < STALL_VEL_THRESHOLD) {
-            if (stall_start_ms == 0) stall_start_ms = millis();
-            else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
-                Serial.printf("stall at ang=%.1f while commanding T=%.2f — halted. "
-                              "Send T with opposite sign to back off.\n",
-                              motor.shaft_angle, target);
-                haltMotor();
+        bool want_motion  = fabs(target) > IDLE_TARGET_THRESH;
+        bool ramping_down = fabs(ramped_target) > IDLE_TARGET_THRESH;
+
+        if (want_motion) {
+            last_active_ms = millis();
+
+            if (!motor.enabled) {
+                // Coming out of idle or halt — full nSLEEP reset to clear any latched fault.
+                resetDriver();
+                enable_time_ms = millis();
+                stall_start_ms = 0;
+            }
+
+            // Skip stall detection during the accelerate-from-stop warmup.
+            bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
+            if (!in_warmup && fabs(motor.shaft_velocity) < STALL_VEL_THRESHOLD) {
+                if (stall_start_ms == 0) stall_start_ms = millis();
+                else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
+                    Serial.printf("stall at ang=%ld.%ld while commanding T=%ld.%02ld — halted. "
+                                  "Send T with opposite sign to back off.\n",
+                                  FX_HI(motor.shaft_angle, 10), FX_LO(motor.shaft_angle, 10),
+                                  FX_HI(target, 100), FX_LO(target, 100));
+                    haltMotor();
+                    stall_start_ms = 0;
+                }
+            } else {
                 stall_start_ms = 0;
             }
         } else {
             stall_start_ms = 0;
+            // While the ramp is still winding down, keep the idle timer fresh so
+            // the motor stays engaged driving the deceleration.
+            if (ramping_down) last_active_ms = millis();
+            if (motor.enabled && !ramping_down && millis() - last_active_ms > IDLE_DISABLE_MS) {
+                motor.disable();
+            }
         }
-    } else {
-        stall_start_ms = 0;
-        // While the ramp is still winding down, keep the idle timer fresh so
-        // the motor stays engaged driving the deceleration.
-        if (ramping_down) last_active_ms = millis();
-        if (motor.enabled && !ramping_down && millis() - last_active_ms > IDLE_DISABLE_MS) {
-            motor.disable();
+
+        updateRamp();
+        motor.loopFOC();
+        motor.move(ramped_target);
+
+        if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
+            last_print_ms = millis();
+            // Skip the write if the TX ring is too full to absorb the line in
+            // one shot; dropped telemetry beats blocking the FOC loop.
+            if (Serial.availableForWrite() >= 96) {
+                Serial.printf("tgt:%ld.%02ld ramp:%ld.%02ld vel:%ld.%02ld ang:%ld.%ld en:%d maxLp:%luus\n",
+                              FX_HI(target,         100), FX_LO(target,         100),
+                              FX_HI(ramped_target,  100), FX_LO(ramped_target,  100),
+                              FX_HI(motor.shaft_velocity, 100), FX_LO(motor.shaft_velocity, 100),
+                              FX_HI(motor.shaft_angle,    10),  FX_LO(motor.shaft_angle,    10),
+                              (int)motor.enabled,
+                              (unsigned long)max_loop_us);
+            }
+            max_loop_us = 0;
         }
-    }
-
-    updateRamp();
-    motor.loopFOC();
-    motor.move(ramped_target);
-
-    // Periodic status for bench tuning.
-    static uint32_t last_print = 0;
-    if (millis() - last_print >= PRINT_INTERVAL_MS) {
-        last_print = millis();
-        Serial.printf("tgt:%.2f ramp:%.2f  vel:%6.2f  ang:%7.2f  en:%d  C:%.2f  P:%.2f I:%.1f Tf:%.3f  A:%.1f  M:%u\n",
-                      target, ramped_target, motor.shaft_velocity, motor.shaft_angle,
-                      (int)motor.enabled,
-                      motor.current_limit,
-                      motor.PID_velocity.P, motor.PID_velocity.I, motor.LPF_velocity.Tf,
-                      accel,
-                      motor.motion_downsample);
     }
 }
