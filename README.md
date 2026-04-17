@@ -70,3 +70,16 @@ arduino-cli monitor --port /dev/cu.usbmodem101 --config baudrate=115200 --config
 - **M2:** AS5600 / MT6701 encoder, closed-loop position, pole-pair auto-calibration.
 - **M3:** CCT LED strip (WW/CW MOSFETs) + rotary encoder user input.
 - **M4:** Matter / Google Home integration (port from CylinderLamp).
+  - **Refactor required first:** the current sketch spins forever inside `loop()` (`while (true) { ... }`) to dodge the arduino-esp32 single-core scheduler quirk that preempts `loop()` for ~4 ms every 2 s — see "Known issues" below. That works fine with no networking, but Matter/WiFi/BLE all run on FreeRTOS tasks at priorities 5–23 and need the scheduler to actually schedule them. Before pulling Matter in, move `motor.loopFOC()` onto a hardware timer (`hw_timer_t` + `IRAM_ATTR` ISR at 5–10 kHz) so commutation is deterministic regardless of what else runs, and let `loop()` return normally to feed the rest of the system.
+
+## Known issues / references
+
+- **Periodic motor "click" every ~2 s on ESP32-C3 single-core, all SimpleFOC versions.** The arduino-esp32 framework runs `loop()` inside a FreeRTOS task that gets preempted by an unidentified background task for ~4 ms roughly every 2 s. At motor speeds where the electrical period approaches the stall duration (e.g. 50 rad/s × 11 pole pairs ≈ 11 ms electrical), SVPWM is held frozen at the wrong rotor angle for ~37 % of an electrical cycle, producing an audible torque step on resume. M1 works around this by never returning from `loop()`. The proper fix is to run `loopFOC()` from a hardware timer ISR (see Roadmap M4).
+  - [simplefoc/Arduino-FOC#292 — "Motor skips every 2 sec on ESP32, even in open loop"](https://github.com/simplefoc/Arduino-FOC/issues/292)
+  - [SimpleFOC community — Periodic jerk in velocity control mode](https://community.simplefoc.com/t/periodic-jerk-in-velocity-control-mode/7641)
+  - [SimpleFOC community — ESP32-C6 strange spikes in loop execution time](https://community.simplefoc.com/t/esp32-c6-strange-spikes-in-loop-execution-time/8003)
+  - [SimpleFOC community — Clicking noise with ESP32 and Lib Version 2.3.4](https://community.simplefoc.com/t/clicking-noise-with-esp32-and-lib-version-2-3-4/5939)
+  - [SimpleFOC docs — Hard real-time FOC loop using timers](https://docs.simplefoc.com/real_time_loop)
+- **ESP32-C3 has no FPU.** Every `%.2f` in a `printf` runs through soft-float and costs ~300 µs per argument. A 9-float status line was responsible for an additional ~4 ms hot-path stall before the loop was reworked; the current sketch uses fixed-point integer formatting (`FX_HI` / `FX_LO`) for anything printed inside the FOC loop.
+- **DRV8313 latched faults are cleared by `nSLEEP`, not by `EN`.** SimpleFOC Mini's `EN` header only tri-states the H-bridge outputs. To recover from OCP/TSD, pulse `nSLEEP` low for ≥30 µs (the sketch uses 50 µs) and wait ≥1 ms before re-enabling. `PIN_NSP` (GPIO 21) handles this in `resetDriver()`.
+- **ESP32-C3 SuperMini USB-CDC reset on monitor attach.** `arduino-cli monitor` defaults to `dtr=on,rts=on`, which holds `BOOT` low and prevents the sketch from running. Always pass `--config dtr=off --config rts=off`.
