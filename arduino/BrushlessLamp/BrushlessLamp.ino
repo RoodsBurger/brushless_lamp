@@ -1,20 +1,20 @@
 // Brushless Lamp — closed-loop FOC
-// ESP32-C3 SuperMini + SimpleFOC Mini (DRV8313) + 4015 BLDC gimbal + MT6701 ABZ encoder
+// Seeed XIAO ESP32-C6 + SimpleFOC Mini (DRV8313) + 4015 BLDC gimbal + MT6701 ABZ encoder
 
 #include <SimpleFOC.h>
 
-constexpr uint8_t PIN_PWM_A = 5;
-constexpr uint8_t PIN_PWM_B = 6;
-constexpr uint8_t PIN_PWM_C = 7;
-constexpr uint8_t PIN_EN    = 10;
-constexpr uint8_t PIN_NSP   = 21;    // DRV8313 nSLEEP — drives fault latch reset
-constexpr uint8_t PIN_NFT   = 0;     // DRV8313 nFAULT — open-drain, LOW = fault
+// Pin numbers are chip GPIOs; XIAO D-label shown in comments for soldering reference.
+constexpr uint8_t PIN_PWM_A = 18;    // D10 — DRV8313 IN1
+constexpr uint8_t PIN_PWM_B = 20;    // D9  — DRV8313 IN2
+constexpr uint8_t PIN_PWM_C = 19;    // D8  — DRV8313 IN3
+constexpr uint8_t PIN_EN    = 17;    // D7  — DRV8313 EN  (HIGH = outputs enabled)
+constexpr uint8_t PIN_NSP   = 16;    // D6  — DRV8313 nSLEEP (pulse LOW to clear latched fault)
+constexpr uint8_t PIN_NFT   = 21;    // D3  — DRV8313 nFAULT (open-drain, LOW = fault)
 
-constexpr uint8_t PIN_ENC_A = 1;
-constexpr uint8_t PIN_ENC_B = 2;
+constexpr uint8_t PIN_ENC_A = 0;     // D0  — MT6701 A
+constexpr uint8_t PIN_ENC_B = 1;     // D1  — MT6701 B
 
 constexpr uint32_t PWM_FREQ_HZ = 25000;
-constexpr uint8_t  PWM_RES_BIT = 10;
 
 constexpr int   POLE_PAIRS     = 11;
 constexpr int   ENCODER_CPR    = 1024;
@@ -44,67 +44,10 @@ constexpr uint32_t STALL_WARMUP_MS     = 800;
 
 constexpr float    TARGET_ACCEL_DEFAULT = 10.0f;   // rad/s² — tune via 'A'
 
-// BLDCDriver implementation that drives LEDC channels directly.
-class LEDCDriver3PWM : public BLDCDriver {
-public:
-    uint8_t  pa, pb, pc, pen;
-    uint32_t pwm_hz;
-    uint8_t  res;
-    uint32_t pwm_max;
-
-    LEDCDriver3PWM(uint8_t a, uint8_t b, uint8_t c, uint8_t en,
-                   uint32_t freq, uint8_t resolution)
-      : pa(a), pb(b), pc(c), pen(en),
-        pwm_hz(freq), res(resolution), pwm_max((1u << resolution) - 1) {}
-
-    int init() override {
-        pinMode(pen, OUTPUT);
-        digitalWrite(pen, LOW);
-        delay(10);
-
-        bool ok = ledcAttach(pa, pwm_hz, res)
-               && ledcAttach(pb, pwm_hz, res)
-               && ledcAttach(pc, pwm_hz, res);
-        if (!ok) { initialized = false; return 0; }
-
-        ledcWrite(pa, pwm_max / 2);
-        ledcWrite(pb, pwm_max / 2);
-        ledcWrite(pc, pwm_max / 2);
-        initialized = true;
-        return 1;
-    }
-
-    void enable()  override { digitalWrite(pen, HIGH); }
-    void disable() override {
-        digitalWrite(pen, LOW);
-        ledcWrite(pa, 0);
-        ledcWrite(pb, 0);
-        ledcWrite(pc, 0);
-    }
-
-    void setPwm(float Ua, float Ub, float Uc) override {
-        Ua = _constrain(Ua, 0.0f, voltage_limit);
-        Ub = _constrain(Ub, 0.0f, voltage_limit);
-        Uc = _constrain(Uc, 0.0f, voltage_limit);
-        dc_a = Ua / voltage_power_supply;
-        dc_b = Ub / voltage_power_supply;
-        dc_c = Uc / voltage_power_supply;
-        ledcWrite(pa, (uint32_t)(dc_a * pwm_max));
-        ledcWrite(pb, (uint32_t)(dc_b * pwm_max));
-        ledcWrite(pc, (uint32_t)(dc_c * pwm_max));
-    }
-
-    void setPhaseState(PhaseState sa, PhaseState sb, PhaseState sc) override {
-        if (sa == PHASE_OFF) ledcWrite(pa, pwm_max / 2);
-        if (sb == PHASE_OFF) ledcWrite(pb, pwm_max / 2);
-        if (sc == PHASE_OFF) ledcWrite(pc, pwm_max / 2);
-    }
-};
-
-BLDCMotor      motor   = BLDCMotor(POLE_PAIRS);
-LEDCDriver3PWM driver(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C, PIN_EN, PWM_FREQ_HZ, PWM_RES_BIT);
-Encoder        encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
-Commander      command = Commander(Serial);
+BLDCMotor       motor   = BLDCMotor(POLE_PAIRS);
+BLDCDriver3PWM  driver  = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C, PIN_EN);
+Encoder         encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
+Commander       command = Commander(Serial);
 
 void IRAM_ATTR doA() { encoder.handleA(); }
 void IRAM_ATTR doB() { encoder.handleB(); }
@@ -185,6 +128,7 @@ void setup() {
 
     driver.voltage_power_supply = SUPPLY_VOLTAGE;
     driver.voltage_limit        = SUPPLY_VOLTAGE;
+    driver.pwm_frequency        = PWM_FREQ_HZ;
     Serial.printf("driver.init()=%d\n", driver.init());
     motor.linkDriver(&driver);
 
@@ -225,9 +169,9 @@ void setup() {
     Serial.println("Ready.");
 }
 
-// Format a float as fixed-point integer parts to dodge ESP32-C3's soft-float
-// printf, which adds ~300 us per %.2f and stalls the FOC loop for several ms
-// when several args appear in one line.
+// Format a float as fixed-point integer parts to dodge soft-float printf.
+// ESP32-C3/C6 have no FPU; every %.2f adds ~300 us and can stall the FOC
+// loop for several ms when several args appear on one line.
 #define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
 #define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
 
@@ -235,8 +179,9 @@ void loop() {
     // Spin in place rather than returning — arduino-esp32 runs loop() inside a
     // FreeRTOS task that context-switches every ~2 s on single-core variants
     // (S2/C3/C6), preempting us for ~4 ms. At 50 rad/s × 11 pp that's a full
-    // electrical cycle of frozen SVPWM, audible as a hard click. Known issue,
-    // SimpleFOC community fix. Reference: simplefoc/Arduino-FOC#292.
+    // electrical cycle of frozen SVPWM, audible as a hard click. Known issue
+    // on both C3 and C6; SimpleFOC community fix. Refs: simplefoc/Arduino-FOC#292,
+    // community.simplefoc.com/t/esp32-c6-strange-spikes-in-loop-execution-time/8003.
 
     static uint32_t prev_loop_us = 0;
     static uint32_t max_loop_us  = 0;
