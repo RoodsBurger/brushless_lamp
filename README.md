@@ -2,9 +2,17 @@
 
 Kinetic smart lamp — BLDC variant of [CylinderLamp](../CylinderLamp). Same concept (lit core raised/lowered by a motor to control brightness), but the stepper + TMC2209 is replaced by a gimbal BLDC motor driven through a SimpleFOC Mini, with a Seeed XIAO ESP32-C6 running the FOC commutation itself.
 
-## Current milestones — M1 (motor) + M2 (closed-loop) + M3a (rotary input)
+## Current milestones — M1 + M2 + M3a + M3b
 
-Firmware runs closed-loop **angular-position control** on the motor via an MT6701 ABZ encoder. A rotary encoder knob with push-button drives the user-facing control surface (position via knob, speed preset via double-click, factory reset via long-hold). Last commanded position and speed preset are persisted in flash. LEDs + brightness control land in M3b.
+Closed-loop **angular-position control** on the motor via an MT6701 ABZ encoder. A rotary encoder knob with push-button drives the user interface:
+- **Position mode (default)**: knob turns the motor — the lit core rises/falls mechanically. Commanded position at 0 electrically turns the LEDs **off**.
+- **Brightness mode**: knob adjusts LED brightness 0–100 % on a logarithmic curve.
+- **Single click**: toggle between position and brightness mode.
+- **Double click**: cycle motor speed preset `{10, 15, 20, 25}` rad/s.
+- **Long-hold 5 s**: lamp LEDs pulse 5× as factory-reset warning.
+- **Long-hold 9 s**: factory reset (clears Preferences, reboots).
+
+`commanded`, `speed_idx`, `brightness`, and `cct` persist in flash. Boot applies a sensor_offset so the motor doesn't jump on startup.
 
 ### Hardware
 
@@ -13,12 +21,14 @@ Firmware runs closed-loop **angular-position control** on the motor via an MT670
 - **Motor:** 4015 BLDC gimbal, 12–36 V, 11 pole pairs, hollow-shaft external rotor
 - **Motor encoder:** MT6701 (ABZ mode, 1024 CPR)
 - **User input:** PEC11-style rotary encoder with integrated push-button (20 detents/rev)
+- **LED strip:** dual-channel CCT (common anode + warm-white cathode + cool-white cathode), driven at 24 V
+- **LED switching:** 2× AO3400A N-channel logic-level MOSFETs (SOT-23), one per channel
 - **Power:** Mean Well LRS-75-24 (24 V 3.2 A)
 - **Buck:** Mini360 24 V → 5 V for the MCU
 
 ### Wiring
 
-PWM + nSLEEP on D7–D10 (driver cluster), motor encoder A/B on D0/D1, rotary knob + push-button on D2–D4. EN is **hard-tied to 3V3 on the SimpleFOC Mini itself** — its pull-up is too weak to survive a floating MCU pin, and a lamp doesn't need software tri-state (`motor.disable()` still drives all three phases to 50 % duty, zero phase-to-phase differential, zero torque). nFAULT and Z are intentionally unconnected: stall detection covers faults, and Z only helps for single-turn absolute positioning which this project doesn't need. D5/D6 stay free for M3b's WW/CW LED PWMs.
+PWM + nSLEEP on D7–D10 (driver cluster), motor encoder A/B on D0/D1, rotary knob + push-button on D2–D4, LED MOSFET gates on D5/D6. All 11 broken-out GPIOs are used. EN is **hard-tied to 3V3 on the SimpleFOC Mini itself** — its pull-up is too weak to survive a floating MCU pin, and a lamp doesn't need software tri-state (`motor.disable()` still drives all three phases to 50 % duty, zero phase-to-phase differential, zero torque). nFAULT and Z are intentionally unconnected: stall detection covers faults, and Z only helps for single-turn absolute positioning which this project doesn't need.
 
 | XIAO pin | Chip GPIO | Target | Notes |
 |---|---|---|---|
@@ -26,16 +36,17 @@ PWM + nSLEEP on D7–D10 (driver cluster), motor encoder A/B on D0/D1, rotary kn
 | D9  | GPIO 20 | SimpleFOC Mini IN2 | PWM phase B (MCPWM) |
 | D8  | GPIO 19 | SimpleFOC Mini IN3 | PWM phase C (MCPWM) |
 | D7  | GPIO 17 | SimpleFOC Mini nSLEEP | pulse LOW ≥ 30 µs to clear latched OCP/TSD |
+| D6  | GPIO 16 | LED CW MOSFET gate | LEDC PWM 25 kHz, 10-bit |
+| D5  | GPIO 23 | LED WW MOSFET gate | LEDC PWM 25 kHz, 10-bit |
 | D0  | GPIO 0  | MT6701 A | quadrature, internal pull-up |
 | D1  | GPIO 1  | MT6701 B | quadrature, internal pull-up |
 | D2  | GPIO 2  | Rotary encoder A | PCNT ch0, hardware glitch-filtered |
 | D3  | GPIO 21 | Rotary encoder B | PCNT ch1, hardware glitch-filtered |
 | D4  | GPIO 22 | Rotary push button | INPUT_PULLUP, polled |
-| (onboard) | GPIO 15 | XIAO user LED | temporary factory-reset warning blink (moves to lamp LEDs in M3b) |
 | 3V3 | — | MT6701 V+ · SimpleFOC Mini 3V3 · **EN jumper** · rotary encoder V+ | sourced from the XIAO's onboard LDO |
-| GND | — | GND | common with Mean Well V− and Mini360 OUT− |
+| GND | — | GND | common with Mean Well V−, Mini360 OUT−, and both LED MOSFET sources |
 | 5V  | — | Mini360 OUT+ | XIAO power; onboard LDO then drives the 3V3 rail |
-| — | — | Mean Well 24 V → Mini VCC / VM | motor rail |
+| — | — | Mean Well 24 V → Mini VCC / VM · LED strip VCC | motor rail + LED rail (shared 24 V) |
 
 **Install a jumper from 3V3 to the EN header on the SimpleFOC Mini.** This is what keeps the DRV8313 enabled; without it the driver floats disabled.
 
@@ -79,6 +90,17 @@ PWM + nSLEEP on D7–D10 (driver cluster), motor encoder A/B on D0/D1, rotary kn
 - Button pin 2 → `GND`
 - (No external pull-ups needed — PCNT has a hardware glitch filter for A/B, and the button uses the MCU's `INPUT_PULLUP`.)
 
+**LED MOSFET pair (AO3400A ×2, SOT-23, low-side switching, gate driven direct from 3V3 logic):**
+- WW MOSFET: gate → XIAO `D5`, drain → LED strip `W` (warm-white cathode), source → `GND`
+- CW MOSFET: gate → XIAO `D6`, drain → LED strip `C` (cool-white cathode), source → `GND`
+- No gate resistor, pull-down, or flyback diode — same bare circuit as CylinderLamp. AO3400A is logic-level (Vgs(th) ≈ 0.9 V) and 3.3 V on the gate fully saturates it.
+- Keep both MOSFET ground wires short and on the common GND rail; the 24 V LED return current flows through these sources.
+
+**LED strip (dual-channel CCT, shared anode, 24 V):**
+- `VCC` → Mean Well `V+` (24 V rail — tap the same distribution as the SimpleFOC Mini's `VM`)
+- `W` (warm-white cathode) → WW MOSFET drain
+- `C` (cool-white cathode) → CW MOSFET drain
+
 ### Build
 
 ```bash
@@ -100,16 +122,18 @@ arduino-cli monitor --port /dev/cu.usbmodem101 --config baudrate=115200 --config
 
 ### User gestures
 
-| Gesture | Effect |
-|---|---|
-| Turn knob CW | `target` position increases by `RAD_PER_CLICK` per detent, motor seeks to it |
-| Turn knob CCW | `target` decreases, clamped at `POS_MIN` |
-| Single click | Stub — prints a reminder that brightness mode lands in M3b |
-| Double click | Advances speed preset (cycles `{10, 15, 20, 25}` rad/s), applies to `motor.velocity_limit`, persists |
-| Hold ≥ 5 s | Onboard LED blinks at 5 Hz as factory-reset warning |
-| Hold ≥ 9 s | Factory reset — clears `Preferences`, fast-blinks 5×, reboots |
+The knob has two modes; single click toggles between them. The motor's commanded position acts as the lamp on/off — at `commanded ≤ 0.1 rad` the LEDs are electrically off regardless of `brightness`.
 
-Last `commanded` position and speed-preset index survive reboot via ESP32 `Preferences`. On boot the firmware applies a `sensor_offset` so `shaft_angle` reads as the persisted `commanded` — the motor **does not** seek after `initFOC`; it stays wherever it physically is and treats that as the saved position. The next knob turn or `G` command is what actually moves the motor.
+| Gesture | Position mode (default) | Brightness mode |
+|---|---|---|
+| Turn knob CW | `commanded` += `RAD_PER_CLICK`, motor seeks | `brightness` +1 % |
+| Turn knob CCW | `commanded` −= `RAD_PER_CLICK`, clamped at 0; at 0 the LEDs turn off | `brightness` −1 %, clamped at 0 |
+| Single click | Switch to brightness mode | Switch to position mode |
+| Double click | Advance motor speed preset (cycles `{10, 15, 20, 25}` rad/s) | Same |
+| Hold ≥ 5 s | LEDs pulse 5× as factory-reset warning (~2.4 s) | Same |
+| Hold ≥ 9 s | Factory reset — clears `Preferences`, reboots | Same |
+
+`commanded`, `speed_idx`, `brightness`, and `cct` all persist via ESP32 `Preferences`. Knob mode itself is not persisted — every boot starts in position mode. On boot the firmware applies a `sensor_offset` so `shaft_angle` reads as the persisted `commanded`, the motor stays put, and LEDs illuminate at the saved brightness/CCT if `commanded > 0.1 rad`.
 
 ### Serial commands
 
@@ -123,26 +147,29 @@ Last `commanded` position and speed-preset index survive reboot via ESP32 `Prefe
 - `K<float>` — KV rating, rpm/V.
 - `M<int>`   — motion downsample (PID runs every N `loopFOC` calls).
 - `A<float>` — trapezoidal accel cap, rad/s² (how quickly `target` can change velocity during a seek).
+- `B<int>`   — LED brightness 0..100 (applied through a gamma LUT, persisted).
+- `W<int>`   — CCT mix 0..100 (0 = all warm-white, 100 = all cool-white; persisted, not touched by the knob — intended for Matter later).
 - `X`        — reset driver (pulses nSLEEP to clear latched fault).
 
-Periodic status line (1 Hz) reports `cmd` (user-commanded position), `tgt` (trapezoidal-profile position fed to the motor), `ang` (measured shaft angle), `vel` (measured velocity), `tvel` (profile velocity, internal), `vlim` (current velocity_limit preset), `spd` (preset index), `en` (driver enabled), and `maxLp` (worst loop iteration in µs over the last second — steady state should be a few hundred µs).
+Periodic status line (1 Hz) reports `cmd` (user-commanded position), `tgt` (trapezoidal-profile position fed to the motor), `ang` (measured shaft angle), `vel` (measured velocity), `tvel` (profile velocity, internal), `vlim` (current velocity_limit preset), `spd` (preset index), `bri` (LED brightness 0–100), `cct` (LED CCT mix 0–100), `mode` (`P` = position, `B` = brightness), `en` (driver enabled), and `maxLp` (worst loop iteration in µs — steady state should be a few hundred µs).
 
 ### First-run checklist
 
-1. Flash firmware with motor disconnected. Confirm banner: `=== BrushlessLamp: closed-loop FOC position ===` followed by `driver.init()=1`, `motor.init()=1`, `motor.initFOC()=1`, then a `loaded: target=X.XX speed_idx=Y (Z rad/s)` line from `Preferences`.
-2. Wire driver + motor + MT6701 encoder + rotary encoder + push button per the table above with Mean Well **off**. Verify common ground.
-3. Power on. Motor aligns during `initFOC()` (visible shaft nudge), then **stays put** — the `sensor_offset` anchor makes the firmware treat the current physical position as the persisted `commanded`. After 300 ms with no motion, driver auto-disables (`en:0`). Any whine during `initFOC` → lower `C` with `C0.3`.
-4. Turn the knob one detent CW — status line's `cmd` and `tgt` should increase by `RAD_PER_CLICK` and the motor should seek to it. CCW decreases. At the soft limits (`POS_MIN` / `POS_MAX` — currently `0` / `1000` rad as a testing placeholder) the target stops accumulating.
-5. Double-click the push button — `spd` field advances and `vlim` shows the new limit. The next knob turn seeks at that speed.
-6. Hold the button for 5 s — XIAO onboard LED starts blinking. Release before 9 s — blinking stops, no reset. Hold past 9 s — fast confirmation blink, chip reboots, `Preferences` clear back to defaults (`target=0`, `spd=1`).
-7. Bench commands: `G10` seeks to 10 rad. `T3` slows subsequent seeks to 3 rad/s. `A5` softens the accel ramp. `X` clears a latched DRV8313 fault after OCP. `maxLp` should stay under ~500 µs throughout, including the idle→motion wake (non-blocking `resetDriver` state machine).
+1. Flash firmware with motor and LED strip disconnected. Confirm banner: `=== BrushlessLamp: closed-loop FOC position ===` followed by `driver.init()=1`, `motor.init()=1`, `motor.initFOC()=1`, and `loaded: commanded=X.XX rad speed_idx=Y (Z rad/s) bri=B cct=C`.
+2. Wire driver + motor + MT6701 encoder + rotary encoder + push button + LED MOSFETs + LED strip per the tables above with Mean Well **off**. Verify common ground (Mean Well V−, Mini360 OUT−, XIAO GND, both MOSFET sources).
+3. Power on. Motor aligns during `initFOC()` (visible shaft nudge), then **stays put** — the `sensor_offset` anchor makes the firmware treat the current physical position as the persisted `commanded`. LEDs start at the saved `brightness`/`cct` **only if** `commanded > 0.1 rad`; on first boot `commanded=0` so the lamp is dark. After 300 ms with no motion, driver auto-disables (`en:0`).
+4. Turn the knob one detent CW — status line's `cmd` and `tgt` should increase by `RAD_PER_CLICK`, motor seeks, and as soon as `cmd` passes 0.1 rad the LEDs light at the saved brightness. Keep turning CCW past 0 to turn the lamp off again.
+5. Single-click — `mode` flips from `P` to `B`. Knob now adjusts `bri` 1 % per detent. Single-click again to return to position mode.
+6. Double-click — `spd` advances and `vlim` shows the new limit. Works in either mode.
+7. Hold the button for 5 s — LEDs fade-pulse 5× (~2.4 s). Release before 9 s — no reset. Hold past 9 s — chip reboots and `Preferences` clear back to defaults (`commanded=0`, `spd=1`, `bri=50`, `cct=50`).
+8. Bench commands: `G10` seeks to 10 rad (LEDs turn on). `B20` dims to ~20 %. `W80` shifts CCT cool. `T3` slows subsequent seeks to 3 rad/s. `A5` softens the accel ramp. `X` clears a latched DRV8313 fault after OCP. `maxLp` should stay under ~500 µs throughout.
 
 ## Roadmap
 
 - **M1 ✓** Motor spins under serial control (MCPWM, 3-phase voltage torque).
 - **M2 ✓** MT6701 encoder, closed-loop velocity, accel-limited velocity ramp, DRV8313 fault/stall recovery.
 - **M3a ✓** Rotary encoder + push button user input. Position mode, PCNT-decoded knob, click/double-click/long-hold button state machine, speed-preset cycling, `Preferences` persistence of target + speed.
-- **M3b:** CCT LED strip — WW/CW MOSFET PWMs on D5/D6, single-click brightness-mode toggle, long-hold warning moves from onboard LED to the lamp LEDs.
+- **M3b ✓** CCT LED strip — WW/CW MOSFETs on D5/D6 driven via LEDC, log-curve brightness, position-gated lamp on/off, single-click brightness-mode toggle, long-hold warning fade-pulses on the lamp LEDs. CCT mix is set via serial (`W`) now and via Matter later.
 - **M4:** Matter integration (port from CylinderLamp). The C6 supports **802.15.4**, so Matter-over-Thread is on the table — likely more robust than Matter-over-WiFi given the motor switching noise and tighter latency budget.
   - **Refactor required first:** the current sketch spins forever inside `loop()` (`while (true) { ... }`) to dodge the arduino-esp32 single-core scheduler quirk that preempts `loop()` for ~4 ms every ~2 s — see "Known issues" below. That works fine with no networking, but Matter/WiFi/Thread/BLE all run on FreeRTOS tasks at priorities 5–23 and need the scheduler to actually schedule them. Before pulling Matter in, move `motor.loopFOC()` onto a hardware timer (`hw_timer_t` + `IRAM_ATTR` ISR at 5–10 kHz) so commutation is deterministic regardless of what else runs, and let `loop()` return normally.
 

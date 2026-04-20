@@ -13,12 +13,19 @@ constexpr uint8_t PIN_NSP   = 17;    // D7  — DRV8313 nSLEEP (pulse LOW to cle
 constexpr uint8_t PIN_ENC_A = 0;     // D0  — MT6701 A
 constexpr uint8_t PIN_ENC_B = 1;     // D1  — MT6701 B
 
-constexpr uint8_t PIN_ROT_A       = 2;     // D2  — rotary knob A
-constexpr uint8_t PIN_ROT_B       = 21;    // D3  — rotary knob B
-constexpr uint8_t PIN_BTN         = 22;    // D4  — rotary push button
-constexpr uint8_t PIN_LED_ONBOARD = 15;    // XIAO user LED — factory-reset warning
+constexpr uint8_t PIN_ROT_A = 2;     // D2 — rotary knob A
+constexpr uint8_t PIN_ROT_B = 21;    // D3 — rotary knob B
+constexpr uint8_t PIN_BTN   = 22;    // D4 — rotary push button
 
-constexpr uint32_t PWM_FREQ_HZ = 25000;
+constexpr uint8_t PIN_LED_WW = 23;   // D5 — AO3400A gate for warm-white channel
+constexpr uint8_t PIN_LED_CW = 16;   // D6 — AO3400A gate for cool-white channel
+
+constexpr uint32_t PWM_FREQ_HZ     = 25000;
+constexpr uint32_t LED_PWM_FREQ_HZ = 25000;
+constexpr uint8_t  LED_PWM_RES_BIT = 10;
+constexpr uint16_t LED_PWM_MAX     = (1u << LED_PWM_RES_BIT) - 1;
+constexpr float    LED_GAMMA       = 2.2f;
+constexpr float    LEDS_ON_THRESH  = 0.1f;  // rad — commanded below this means lamp off
 
 constexpr int   POLE_PAIRS     = 11;
 constexpr int   ENCODER_CPR    = 1024;
@@ -78,9 +85,20 @@ float   target         = 0.0f;             // trapezoidal-profile position fed t
 float   target_vel     = 0.0f;             // current velocity of target, rad/s (internal state)
 float   accel          = ACCEL_DEFAULT;    // rad/s² — ramp rate for target_vel
 uint8_t speed_idx      = DEFAULT_SPEED_IDX;
+uint8_t brightness     = 50;               // 0..100, logarithmic via gamma LUT
+uint8_t cct            = 50;               // 0..100, 0 = all WW, 100 = all CW
+
+enum KnobMode { MODE_POSITION, MODE_BRIGHTNESS };
+KnobMode knob_mode = MODE_POSITION;
+
+uint16_t gamma_lut[101];                   // duty 0..LED_PWM_MAX indexed by brightness 0..100
+uint16_t last_duty_ww = 0xFFFF;            // cached last-written LEDC values; 0xFFFF forces first update
+uint16_t last_duty_cw = 0xFFFF;
 
 bool     dirty_pos      = false;
 bool     dirty_spd      = false;
+bool     dirty_bri      = false;
+bool     dirty_cct      = false;
 uint32_t last_change_ms = 0;
 
 int      pcnt_prev       = 0;
@@ -92,12 +110,54 @@ bool       btn_debounced   = false;
 uint32_t   btn_last_edge   = 0;
 uint32_t   press_start_ms  = 0;
 uint32_t   first_release_ms = 0;
-bool       long_warn_active = false;
-bool       long_reset_done  = false;
+bool       warn_fired      = false;
+bool       long_reset_done = false;
 
 // Fixed-point printf args — C6 has no FPU and %.2f costs ~300 µs per arg.
 #define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
 #define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
+
+// Populate the gamma lookup table (call once at setup) so the hot path is a straight lookup.
+void buildGammaLUT() {
+    for (int i = 0; i <= 100; i++) {
+        float x = i / 100.0f;
+        gamma_lut[i] = (uint16_t)(powf(x, LED_GAMMA) * LED_PWM_MAX + 0.5f);
+    }
+}
+
+// Write the current brightness/cct to the two PWM channels, gated by motor position.
+void updateLEDs() {
+    bool active = commanded > LEDS_ON_THRESH;
+    uint32_t base = active ? gamma_lut[brightness] : 0;
+    uint16_t want_ww = (uint16_t)((base * (100 - cct)) / 100);
+    uint16_t want_cw = (uint16_t)((base * cct)        / 100);
+    if (want_ww != last_duty_ww) { ledcWrite(PIN_LED_WW, want_ww); last_duty_ww = want_ww; }
+    if (want_cw != last_duty_cw) { ledcWrite(PIN_LED_CW, want_cw); last_duty_cw = want_cw; }
+}
+
+// Blocking 5x fade-out/fade-in on both LED channels as the factory-reset warning (~480 ms per pulse).
+void pulseLEDs(uint8_t n) {
+    uint32_t base = gamma_lut[brightness];
+    uint16_t base_ww = (uint16_t)((base * (100 - cct)) / 100);
+    uint16_t base_cw = (uint16_t)((base * cct)        / 100);
+    for (uint8_t i = 0; i < n; i++) {
+        for (int step = 20; step >= 0; step--) {
+            ledcWrite(PIN_LED_WW, (uint16_t)((uint32_t)base_ww * step / 20));
+            ledcWrite(PIN_LED_CW, (uint16_t)((uint32_t)base_cw * step / 20));
+            delay(8);
+        }
+        delay(80);
+        for (int step = 0; step <= 20; step++) {
+            ledcWrite(PIN_LED_WW, (uint16_t)((uint32_t)base_ww * step / 20));
+            ledcWrite(PIN_LED_CW, (uint16_t)((uint32_t)base_cw * step / 20));
+            delay(8);
+        }
+        delay(80);
+    }
+    last_duty_ww = 0xFFFF;
+    last_duty_cw = 0xFFFF;
+    updateLEDs();
+}
 
 // Zero PID + filtered velocity so the re-enabled driver doesn't fire a voltage spike.
 void flushControlState() {
@@ -142,16 +202,13 @@ void haltMotor() {
 // Mark the target-position NVS entry for a debounced write.
 void markPosDirty() { dirty_pos = true; last_change_ms = millis(); }
 
-// Write pending target / speed entries to NVS when settled.
+// Write pending entries to NVS once user input has settled.
 void maybePersist() {
-    if (dirty_pos && millis() - last_change_ms > PERSIST_DEBOUNCE_MS) {
-        prefs.putFloat("pos", commanded);
-        dirty_pos = false;
-    }
-    if (dirty_spd) {
-        prefs.putUChar("spd", speed_idx);
-        dirty_spd = false;
-    }
+    bool settled = millis() - last_change_ms > PERSIST_DEBOUNCE_MS;
+    if (dirty_pos && settled) { prefs.putFloat("pos", commanded);   dirty_pos = false; }
+    if (dirty_bri && settled) { prefs.putUChar("bri", brightness);  dirty_bri = false; }
+    if (dirty_cct && settled) { prefs.putUChar("cct", cct);         dirty_cct = false; }
+    if (dirty_spd)            { prefs.putUChar("spd", speed_idx);   dirty_spd = false; }
 }
 
 void doCurrent (char* arg) { command.scalar(&motor.current_limit, arg); }
@@ -175,6 +232,28 @@ void doGoto(char* arg) {
     }
 }
 
+// Set LED brightness 0..100; scales both channels via gamma LUT.
+void doBrightness(char* arg) {
+    float v; command.scalar(&v, arg);
+    int clamped = constrain((int)v, 0, 100);
+    if (clamped != (int)brightness) {
+        brightness = (uint8_t)clamped;
+        dirty_bri = true;
+        last_change_ms = millis();
+    }
+}
+
+// Set CCT mix 0..100; 0 = all warm white, 100 = all cool white.
+void doCct(char* arg) {
+    float v; command.scalar(&v, arg);
+    int clamped = constrain((int)v, 0, 100);
+    if (clamped != (int)cct) {
+        cct = (uint8_t)clamped;
+        dirty_cct = true;
+        last_change_ms = millis();
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1500);
@@ -183,9 +262,13 @@ void setup() {
     pinMode(PIN_NSP, OUTPUT);
     digitalWrite(PIN_NSP, HIGH);
     pinMode(PIN_BTN, INPUT_PULLUP);
-    pinMode(PIN_LED_ONBOARD, OUTPUT);
-    digitalWrite(PIN_LED_ONBOARD, LOW);
     delay(2);
+
+    buildGammaLUT();
+    ledcAttach(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
+    ledcAttach(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
+    ledcWrite(PIN_LED_WW, 0);
+    ledcWrite(PIN_LED_CW, 0);
 
     encoder.quadrature = Quadrature::ON;
     encoder.pullup     = Pullup::USE_INTERN;
@@ -224,17 +307,22 @@ void setup() {
     if (!foc_ok) Serial.println("FOC init failed");
 
     prefs.begin("blamp", false);
-    commanded = constrain(prefs.getFloat("pos", POS_MIN), POS_MIN, POS_MAX);
-    target    = commanded;
-    speed_idx = prefs.getUChar("spd", DEFAULT_SPEED_IDX);
+    commanded  = constrain(prefs.getFloat("pos", POS_MIN), POS_MIN, POS_MAX);
+    target     = commanded;
+    speed_idx  = prefs.getUChar("spd", DEFAULT_SPEED_IDX);
+    brightness = prefs.getUChar("bri", 50);
+    cct        = prefs.getUChar("cct", 50);
     if (speed_idx >= VELOCITY_PRESET_N) speed_idx = DEFAULT_SPEED_IDX;
+    if (brightness > 100) brightness = 50;
+    if (cct > 100)        cct        = 50;
     motor.velocity_limit = VELOCITY_PRESETS[speed_idx];
 
     // Anchor shaft_angle to the persisted commanded so the motor doesn't seek on boot.
     motor.sensor_offset -= commanded;
     motor.loopFOC();
-    Serial.printf("loaded: commanded=%.2f rad  speed_idx=%u (%.1f rad/s)\n",
-                  commanded, speed_idx, motor.velocity_limit);
+    updateLEDs();
+    Serial.printf("loaded: commanded=%.2f rad  speed_idx=%u (%.1f rad/s)  bri=%u  cct=%u\n",
+                  commanded, speed_idx, motor.velocity_limit, brightness, cct);
 
     pinMode(PIN_ROT_A, INPUT_PULLUP);
     pinMode(PIN_ROT_B, INPUT_PULLUP);
@@ -271,11 +359,13 @@ void setup() {
     command.add('K', doK,       "KV rating");
     command.add('M', doM,       "motion downsample");
     command.add('A', doAccel,   "trapezoidal accel rad/s²");
+    command.add('B', doBrightness, "LED brightness 0..100");
+    command.add('W', doCct,        "CCT mix 0..100 (0=WW,100=CW)");
     command.add('X', doReset,   "reset driver (clear latched fault)");
     Serial.println("Ready.");
 }
 
-// Translate PCNT count deltas into commanded-position adjustments in whole-detent steps.
+// Translate PCNT count deltas into either position or brightness adjustments depending on knob mode.
 void readRotary() {
     int now = 0;
     pcnt_unit_get_count(pcnt_unit, &now);
@@ -284,10 +374,20 @@ void readRotary() {
     int detents = delta / 4;
     if (detents == 0) return;
     pcnt_prev += detents * 4;
-    float clamped = constrain(commanded + detents * RAD_PER_CLICK, POS_MIN, POS_MAX);
-    if (clamped != commanded) {
-        commanded = clamped;
-        markPosDirty();
+
+    if (knob_mode == MODE_BRIGHTNESS) {
+        int clamped = constrain((int)brightness + detents, 0, 100);
+        if (clamped != (int)brightness) {
+            brightness = (uint8_t)clamped;
+            dirty_bri = true;
+            last_change_ms = millis();
+        }
+    } else {
+        float clamped = constrain(commanded + detents * RAD_PER_CLICK, POS_MIN, POS_MAX);
+        if (clamped != commanded) {
+            commanded = clamped;
+            markPosDirty();
+        }
     }
 }
 
@@ -329,26 +429,20 @@ void advanceSpeedPreset() {
                   FX_LO(motor.velocity_limit, 10));
 }
 
-// Placeholder single-click handler; becomes the brightness-mode toggle in M3b.
+// Toggle knob mode between position and brightness.
 void onShortClick() {
-    Serial.println("mode: brightness not implemented (M3b)");
+    knob_mode = (knob_mode == MODE_POSITION) ? MODE_BRIGHTNESS : MODE_POSITION;
+    Serial.printf("mode: %s\n", knob_mode == MODE_POSITION ? "position" : "brightness");
 }
 
-// Blink the onboard LED N times as a visual confirmation.
-void confirmBlink(uint8_t n) {
-    for (uint8_t i = 0; i < n; i++) {
-        digitalWrite(PIN_LED_ONBOARD, HIGH); delay(100);
-        digitalWrite(PIN_LED_ONBOARD, LOW);  delay(100);
-    }
-}
-
-// Wipe NVS, write defaults, confirm-blink, and reboot.
+// Wipe NVS, write defaults, and reboot.
 void factoryReset() {
     Serial.println("factory reset: preferences cleared, rebooting");
     prefs.clear();
     prefs.putFloat("pos", POS_MIN);
     prefs.putUChar("spd", DEFAULT_SPEED_IDX);
-    confirmBlink(5);
+    prefs.putUChar("bri", 50);
+    prefs.putUChar("cct", 50);
     ESP.restart();
 }
 
@@ -360,9 +454,9 @@ void pollButton() {
     if (now - btn_last_edge > BTN_DEBOUNCE_MS && raw != btn_debounced) {
         btn_debounced = raw;
         if (btn_debounced) {
-            press_start_ms   = now;
-            long_warn_active = false;
-            long_reset_done  = false;
+            press_start_ms  = now;
+            warn_fired      = false;
+            long_reset_done = false;
         } else {
             uint32_t held = now - press_start_ms;
             if (long_reset_done) {
@@ -376,8 +470,6 @@ void pollButton() {
                     click_stage = CLK_WAIT_DBL;
                 }
             } else {
-                long_warn_active = false;
-                digitalWrite(PIN_LED_ONBOARD, LOW);
                 click_stage = CLK_IDLE;
             }
         }
@@ -391,16 +483,11 @@ void pollButton() {
         if (held >= BTN_LONG_RESET_MS) {
             long_reset_done = true;
             factoryReset();
-        } else if (held >= BTN_LONG_WARN_MS && !long_warn_active) {
-            long_warn_active = true;
+        } else if (held >= BTN_LONG_WARN_MS && !warn_fired) {
+            warn_fired = true;
+            pulseLEDs(5);
         }
     }
-}
-
-// Blink the onboard LED at 5 Hz while the long-hold warning is active.
-void updateWarnLED() {
-    if (!long_warn_active) return;
-    digitalWrite(PIN_LED_ONBOARD, ((millis() / 100) & 1) ? HIGH : LOW);
 }
 
 // Never returns — see README for loopTask preemption context.
@@ -469,14 +556,14 @@ void loop() {
         motor.loopFOC();
         motor.move(target);
 
-        updateWarnLED();
+        updateLEDs();
         maybePersist();
 
         if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
             last_print_ms = millis();
             // Skip the write if the TX ring can't take the whole line without blocking.
-            if (Serial.availableForWrite() >= 144) {
-                Serial.printf("cmd:%ld.%02ld tgt:%ld.%02ld ang:%ld.%ld vel:%ld.%02ld tvel:%ld.%02ld vlim:%ld.%ld spd:%u en:%d maxLp:%luus\n",
+            if (Serial.availableForWrite() >= 160) {
+                Serial.printf("cmd:%ld.%02ld tgt:%ld.%02ld ang:%ld.%ld vel:%ld.%02ld tvel:%ld.%02ld vlim:%ld.%ld spd:%u bri:%u cct:%u mode:%c en:%d maxLp:%luus\n",
                               FX_HI(commanded, 100),            FX_LO(commanded, 100),
                               FX_HI(target, 100),               FX_LO(target, 100),
                               FX_HI(motor.shaft_angle, 10),     FX_LO(motor.shaft_angle, 10),
@@ -484,6 +571,9 @@ void loop() {
                               FX_HI(target_vel, 100),           FX_LO(target_vel, 100),
                               FX_HI(motor.velocity_limit, 10),  FX_LO(motor.velocity_limit, 10),
                               speed_idx,
+                              brightness,
+                              cct,
+                              knob_mode == MODE_POSITION ? 'P' : 'B',
                               (int)motor.enabled,
                               (unsigned long)max_loop_us);
             }
