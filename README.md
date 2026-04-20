@@ -122,12 +122,12 @@ arduino-cli monitor --port /dev/cu.usbmodem101 --config baudrate=115200 --config
 
 ### User gestures
 
-The knob has two modes; single click toggles between them. The motor's commanded position acts as the lamp on/off — at `commanded ≤ 0.1 rad` the LEDs are electrically off regardless of `brightness`.
+The knob has two modes; single click toggles between them. The **measured shaft angle** acts as a position-proportional lamp gate: below 0.5 rad the LEDs are fully off, above 3 rad they run at the configured `brightness`, and in between they ramp linearly. Motion speed = fade speed — since the motor's trapezoidal profile makes shaft_angle move smoothly, the lamp fades in and out at whatever pace the motor is travelling.
 
 | Gesture | Position mode (default) | Brightness mode |
 |---|---|---|
 | Turn knob CW | `commanded` += `RAD_PER_CLICK`, motor seeks | `brightness` +1 % |
-| Turn knob CCW | `commanded` −= `RAD_PER_CLICK`, clamped at 0; at 0 the LEDs turn off | `brightness` −1 %, clamped at 0 |
+| Turn knob CCW | `commanded` −= `RAD_PER_CLICK`, clamped at 0; the LEDs dim as the motor passes back through the 3 → 0.5 rad fade zone and go off below 0.5 rad | `brightness` −1 %, clamped at 0 |
 | Single click | Switch to brightness mode | Switch to position mode |
 | Double click | Advance motor speed preset (cycles `{10, 15, 20, 25}` rad/s) | Same |
 | Hold ≥ 5 s | LEDs pulse 5× as factory-reset warning (~2.4 s) | Same |
@@ -158,7 +158,7 @@ Periodic status line (1 Hz) reports `cmd` (user-commanded position), `tgt` (trap
 1. Flash firmware with motor and LED strip disconnected. Confirm banner: `=== BrushlessLamp: closed-loop FOC position ===` followed by `driver.init()=1`, `motor.init()=1`, `motor.initFOC()=1`, and `loaded: commanded=X.XX rad speed_idx=Y (Z rad/s) bri=B cct=C`.
 2. Wire driver + motor + MT6701 encoder + rotary encoder + push button + LED MOSFETs + LED strip per the tables above with Mean Well **off**. Verify common ground (Mean Well V−, Mini360 OUT−, XIAO GND, both MOSFET sources).
 3. Power on. Motor aligns during `initFOC()` (visible shaft nudge), then **stays put** — the `sensor_offset` anchor makes the firmware treat the current physical position as the persisted `commanded`. LEDs start at the saved `brightness`/`cct` **only if** `commanded > 0.1 rad`; on first boot `commanded=0` so the lamp is dark. After 300 ms with no motion, driver auto-disables (`en:0`).
-4. Turn the knob one detent CW — status line's `cmd` and `tgt` should increase by `RAD_PER_CLICK`, motor seeks, and as soon as `cmd` passes 0.1 rad the LEDs light at the saved brightness. Keep turning CCW past 0 to turn the lamp off again.
+4. Turn the knob one detent CW — status line's `cmd` and `tgt` should increase by `RAD_PER_CLICK`, motor seeks, and as `ang` (the measured shaft angle) crosses 0.5 rad the LEDs start fading in, reaching the saved brightness around 3 rad. Keep turning CCW so `ang` drops back below 0.5 rad to turn the lamp fully off.
 5. Single-click — `mode` flips from `P` to `B`. Knob now adjusts `bri` 1 % per detent. Single-click again to return to position mode.
 6. Double-click — `spd` advances and `vlim` shows the new limit. Works in either mode.
 7. Hold the button for 5 s — LEDs fade-pulse 5× (~2.4 s). Release before 9 s — no reset. Hold past 9 s — chip reboots and `Preferences` clear back to defaults (`commanded=0`, `spd=1`, `bri=50`, `cct=50`).

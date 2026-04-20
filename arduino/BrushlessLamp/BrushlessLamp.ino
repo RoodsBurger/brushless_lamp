@@ -21,11 +21,12 @@ constexpr uint8_t PIN_LED_WW = 23;   // D5 — AO3400A gate for warm-white chann
 constexpr uint8_t PIN_LED_CW = 16;   // D6 — AO3400A gate for cool-white channel
 
 constexpr uint32_t PWM_FREQ_HZ     = 25000;
-constexpr uint32_t LED_PWM_FREQ_HZ = 25000;
-constexpr uint8_t  LED_PWM_RES_BIT = 10;
-constexpr uint16_t LED_PWM_MAX     = (1u << LED_PWM_RES_BIT) - 1;
-constexpr float    LED_GAMMA       = 2.2f;
-constexpr float    LEDS_ON_THRESH  = 0.1f;  // rad — commanded below this means lamp off
+constexpr uint32_t LED_PWM_FREQ_HZ  = 25000;
+constexpr uint8_t  LED_PWM_RES_BIT  = 10;
+constexpr uint16_t LED_PWM_MAX      = (1u << LED_PWM_RES_BIT) - 1;
+constexpr float    LED_GAMMA        = 2.2f;
+constexpr float    LEDS_OFF_THRESH  = 0.5f;  // rad — shaft_angle at or below this means lamp fully off
+constexpr float    LEDS_FULL_THRESH = 3.0f;  // rad — shaft_angle at or above this means lamp at configured brightness
 
 constexpr int   POLE_PAIRS     = 11;
 constexpr int   ENCODER_CPR    = 1024;
@@ -125,10 +126,15 @@ void buildGammaLUT() {
     }
 }
 
-// Write the current brightness/cct to the two PWM channels, gated by motor position.
+// Write the current brightness/cct to the two PWM channels; intensity ramps linearly with shaft_angle from LEDS_OFF_THRESH to LEDS_FULL_THRESH.
 void updateLEDs() {
-    bool active = commanded > LEDS_ON_THRESH;
-    uint32_t base = active ? gamma_lut[brightness] : 0;
+    float a = motor.shaft_angle;
+    float fade;
+    if      (a <= LEDS_OFF_THRESH)  fade = 0.0f;
+    else if (a >= LEDS_FULL_THRESH) fade = 1.0f;
+    else                             fade = (a - LEDS_OFF_THRESH) / (LEDS_FULL_THRESH - LEDS_OFF_THRESH);
+
+    uint32_t base = (uint32_t)(gamma_lut[brightness] * fade);
     uint16_t want_ww = (uint16_t)((base * (100 - cct)) / 100);
     uint16_t want_cw = (uint16_t)((base * cct)        / 100);
     if (want_ww != last_duty_ww) { ledcWrite(PIN_LED_WW, want_ww); last_duty_ww = want_ww; }
@@ -218,7 +224,7 @@ void doTf      (char* arg) { command.scalar(&motor.LPF_velocity.Tf, arg); }
 void doR       (char* arg) { command.scalar(&motor.phase_resistance, arg); }
 void doK       (char* arg) { command.scalar(&motor.KV_rating, arg); }
 void doM       (char* arg) { float v; command.scalar(&v, arg); motor.motion_downsample = (unsigned int)v; }
-void doAccel   (char* arg) { command.scalar(&accel, arg); }
+void doAccel   (char* arg) { command.scalar(&accel, arg); if (accel < 0.1f) accel = 0.1f; }
 void doReset   (char* arg) { (void)arg; resetDriverBegin(); Serial.println("driver reset"); }
 void doVelLim  (char* arg) { command.scalar(&motor.velocity_limit, arg); }
 
