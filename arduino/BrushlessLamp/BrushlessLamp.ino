@@ -13,6 +13,7 @@ constexpr uint8_t PIN_NFT   = 21;    // D3  — DRV8313 nFAULT (open-drain, LOW 
 
 constexpr uint8_t PIN_ENC_A = 0;     // D0  — MT6701 A
 constexpr uint8_t PIN_ENC_B = 1;     // D1  — MT6701 B
+constexpr uint8_t PIN_ENC_Z = 2;     // D2  — MT6701 Z (index, 1 pulse/rev)
 
 constexpr uint32_t PWM_FREQ_HZ = 25000;
 
@@ -46,11 +47,12 @@ constexpr float    TARGET_ACCEL_DEFAULT = 10.0f;   // rad/s² — tune via 'A'
 
 BLDCMotor       motor   = BLDCMotor(POLE_PAIRS);
 BLDCDriver3PWM  driver  = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C, PIN_EN);
-Encoder         encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
+Encoder         encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR, PIN_ENC_Z);
 Commander       command = Commander(Serial);
 
 void IRAM_ATTR doA() { encoder.handleA(); }
 void IRAM_ATTR doB() { encoder.handleB(); }
+void IRAM_ATTR doZ() { encoder.handleIndex(); }
 
 float target        = 0.0f;     // user-commanded velocity
 float ramped_target = 0.0f;     // output of the accel ramp, actually fed to motor.move
@@ -123,7 +125,7 @@ void setup() {
     encoder.quadrature = Quadrature::ON;
     encoder.pullup     = Pullup::USE_INTERN;
     encoder.init();
-    encoder.enableInterrupts(doA, doB);
+    encoder.enableInterrupts(doA, doB, doZ);
     motor.linkSensor(&encoder);
 
     driver.voltage_power_supply = SUPPLY_VOLTAGE;

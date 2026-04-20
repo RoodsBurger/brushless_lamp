@@ -29,6 +29,7 @@ All DRV8313 signals (PWM + EN + nSLEEP) are grouped on the XIAO's D6–D10 side;
 | D3  | GPIO 21 | nFAULT | open-drain input, internal pull-up, LOW = fault |
 | D0  | GPIO 0  | MT6701 A | interrupt + internal pull-up |
 | D1  | GPIO 1  | MT6701 B | interrupt + internal pull-up |
+| D2  | GPIO 2  | MT6701 Z | index pulse, 1/rev; interrupt + pull-up |
 | GND | — | GND | common with Mean Well V− and Mini360 OUT− |
 | — | — | VCC / VM | 24 V motor rail |
 | 5V  | — | — | XIAO power from Mini360 |
