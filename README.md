@@ -17,22 +17,22 @@ Firmware energises the motor and runs closed-loop velocity control via an MT6701
 
 ### Wiring
 
-All DRV8313 signals (PWM + EN + nSLEEP) are grouped on the XIAO's D6–D10 side; encoder + nFAULT on D0/D1/D3.
+PWM + nSLEEP occupy one side of the XIAO (D7–D10); encoder A/B on D0/D1. EN is **hard-tied to 3V3 on the SimpleFOC Mini itself** — its pull-up is too weak to survive a floating MCU pin, and a lamp doesn't need software tri-state (`motor.disable()` still drives all three phases to 50 % duty, zero phase-to-phase differential, zero torque). nFAULT and Z are intentionally unconnected: stall detection covers faults, and Z only helps for single-turn absolute positioning which this project doesn't need. D2/D3/D4/D5/D6 stay free for M3.
 
-| XIAO pin | Chip GPIO | SimpleFOC Mini / MT6701 | Notes |
+| XIAO pin | Chip GPIO | Target | Notes |
 |---|---|---|---|
-| D10 | GPIO 18 | IN1 | PWM phase A (MCPWM) |
-| D9  | GPIO 20 | IN2 | PWM phase B (MCPWM) |
-| D8  | GPIO 19 | IN3 | PWM phase C (MCPWM) |
-| D7  | GPIO 17 | EN | HIGH = outputs enabled |
-| D6  | GPIO 16 | nSLEEP | pulse LOW ≥ 30 µs to clear latched OCP/TSD |
-| D3  | GPIO 21 | nFAULT | open-drain input, internal pull-up, LOW = fault |
-| D0  | GPIO 0  | MT6701 A | interrupt + internal pull-up |
-| D1  | GPIO 1  | MT6701 B | interrupt + internal pull-up |
-| D2  | GPIO 2  | MT6701 Z | index pulse, 1/rev; interrupt + pull-up |
+| D10 | GPIO 18 | SimpleFOC Mini IN1 | PWM phase A (MCPWM) |
+| D9  | GPIO 20 | SimpleFOC Mini IN2 | PWM phase B (MCPWM) |
+| D8  | GPIO 19 | SimpleFOC Mini IN3 | PWM phase C (MCPWM) |
+| D7  | GPIO 17 | SimpleFOC Mini nSLEEP | pulse LOW ≥ 30 µs to clear latched OCP/TSD |
+| D0  | GPIO 0  | MT6701 A | quadrature, internal pull-up |
+| D1  | GPIO 1  | MT6701 B | quadrature, internal pull-up |
+| 3V3 | — | MT6701 V+ · SimpleFOC Mini 3V3 · **EN jumper** | sourced from the XIAO's onboard LDO |
 | GND | — | GND | common with Mean Well V− and Mini360 OUT− |
-| — | — | VCC / VM | 24 V motor rail |
-| 5V  | — | — | XIAO power from Mini360 |
+| 5V  | — | Mini360 OUT+ | XIAO power; onboard LDO then drives the 3V3 rail |
+| — | — | Mean Well 24 V → Mini VCC / VM | motor rail |
+
+**Install a jumper from 3V3 to the EN header on the SimpleFOC Mini.** This is what keeps the DRV8313 enabled; without it the driver floats disabled.
 
 Motor phase wires go to the driver's `U`/`V`/`W` screw terminals. Initial phase order is a guess — if `initFOC` fails or the motor stutters, swap any two.
 
@@ -74,7 +74,7 @@ Periodic status line (1 Hz) reports `tgt`, `ramp`, `vel`, `ang`, `en`, and `maxL
 
 1. Flash firmware with motor disconnected. Confirm banner: `=== BrushlessLamp: closed-loop FOC ===` followed by `driver.init()=1`, `motor.init()=1`, `motor.initFOC()=1`.
 2. Wire driver + motor + encoder per the table above with Mean Well **off**. Verify common ground.
-3. Power on. Motor should be energised but stationary (`tgt:0 vel:0 en:1`). Any whine → lower `C` with `C0.3`.
+3. Power on. Motor aligns during `initFOC()` (visible shaft nudge), then auto-disables after 300 ms of no command. Steady-state idle status line should read `tgt:0.00 ... en:0`. Any whine during `initFOC` → lower `C` with `C0.3`.
 4. Send `T5`. Shaft should rotate smoothly. If it stutters or `initFOC` failed, swap two phase wires at the driver.
 5. Push target gradually: `T20`, `T50`. Watch `maxLp` — steady state should stay under ~500 µs. OCP trip is expected at high speed/torque and clears via `X`.
 
@@ -95,5 +95,5 @@ Periodic status line (1 Hz) reports `tgt`, `ramp`, `vel`, `ang`, `en`, and `maxL
   - [SimpleFOC community — Clicking noise with ESP32 and Lib Version 2.3.4](https://community.simplefoc.com/t/clicking-noise-with-esp32-and-lib-version-2-3-4/5939)
   - [SimpleFOC docs — Hard real-time FOC loop using timers](https://docs.simplefoc.com/real_time_loop)
 - **No FPU on C3/C6.** Every `%.2f` in a `printf` goes through soft-float and costs ~300 µs per arg. A 9-float status line was responsible for a ~4 ms hot-path stall before the loop was reworked; the sketch uses fixed-point integer formatting (`FX_HI` / `FX_LO`) for anything printed inside the FOC loop.
-- **DRV8313 latched faults are cleared by `nSLEEP`, not by `EN`.** SimpleFOC Mini's `EN` header only tri-states the H-bridge outputs. To recover from OCP/TSD, pulse `nSLEEP` low for ≥ 30 µs (the sketch uses 50 µs) and wait ≥ 1 ms before re-enabling. `PIN_NSP` handles this in `resetDriver()`.
+- **DRV8313 latched faults are cleared by `nSLEEP`, not by `EN`.** SimpleFOC Mini's `EN` header only tri-states the H-bridge outputs. To recover from OCP/TSD, pulse `nSLEEP` low for ≥ 30 µs (the sketch uses 50 µs) and wait ≥ 1 ms before re-enabling. `PIN_NSP` (D7 / GPIO 17) handles this in `resetDriver()`.
 - **XIAO ESP32-C6 USB-CDC reset on monitor attach.** `arduino-cli monitor` defaults to `dtr=on,rts=on`, which holds the chip in reset and prevents the sketch from running. Always pass `--config dtr=off --config rts=off`.
