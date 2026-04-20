@@ -3,17 +3,13 @@
 
 #include <SimpleFOC.h>
 
-// Pin numbers are chip GPIOs; XIAO D-label shown in comments for soldering reference.
 constexpr uint8_t PIN_PWM_A = 18;    // D10 — DRV8313 IN1
 constexpr uint8_t PIN_PWM_B = 20;    // D9  — DRV8313 IN2
 constexpr uint8_t PIN_PWM_C = 19;    // D8  — DRV8313 IN3
-constexpr uint8_t PIN_EN    = 17;    // D7  — DRV8313 EN  (HIGH = outputs enabled)
-constexpr uint8_t PIN_NSP   = 16;    // D6  — DRV8313 nSLEEP (pulse LOW to clear latched fault)
-constexpr uint8_t PIN_NFT   = 21;    // D3  — DRV8313 nFAULT (open-drain, LOW = fault)
+constexpr uint8_t PIN_NSP   = 17;    // D7  — DRV8313 nSLEEP (pulse LOW to clear latched fault)
 
 constexpr uint8_t PIN_ENC_A = 0;     // D0  — MT6701 A
 constexpr uint8_t PIN_ENC_B = 1;     // D1  — MT6701 B
-constexpr uint8_t PIN_ENC_Z = 2;     // D2  — MT6701 Z (index, 1 pulse/rev)
 
 constexpr uint32_t PWM_FREQ_HZ = 25000;
 
@@ -43,22 +39,21 @@ constexpr float    STALL_VEL_THRESHOLD = 0.2f;
 constexpr uint32_t STALL_TIMEOUT_MS    = 500;
 constexpr uint32_t STALL_WARMUP_MS     = 800;
 
-constexpr float    TARGET_ACCEL_DEFAULT = 10.0f;   // rad/s² — tune via 'A'
+constexpr float    TARGET_ACCEL_DEFAULT = 10.0f;   // rad/s², tune via 'A' command
 
 BLDCMotor       motor   = BLDCMotor(POLE_PAIRS);
-BLDCDriver3PWM  driver  = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C, PIN_EN);
-Encoder         encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR, PIN_ENC_Z);
+BLDCDriver3PWM  driver  = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
+Encoder         encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
 Commander       command = Commander(Serial);
 
 void IRAM_ATTR doA() { encoder.handleA(); }
 void IRAM_ATTR doB() { encoder.handleB(); }
-void IRAM_ATTR doZ() { encoder.handleIndex(); }
 
-float target        = 0.0f;     // user-commanded velocity
-float ramped_target = 0.0f;     // output of the accel ramp, actually fed to motor.move
-float accel         = TARGET_ACCEL_DEFAULT;  // rad/s² acceleration cap
+float target        = 0.0f;                 // user-commanded velocity, rad/s
+float ramped_target = 0.0f;                 // accel-limited velocity fed to motor.move
+float accel         = TARGET_ACCEL_DEFAULT; // rad/s² acceleration cap
 
-// Step ramped_target toward target at `accel` rad/s².
+// Move ramped_target toward target at 'accel' rad/s².
 void updateRamp() {
     static uint32_t last_us = 0;
     uint32_t now = micros();
@@ -71,16 +66,14 @@ void updateRamp() {
     else                                     ramped_target  = target;
 }
 
-// Clear DRV8313 state: kill motion command and flush SimpleFOC state that
-// would otherwise dump a voltage spike the instant the driver re-enables.
+// Zero PID + filtered velocity so the re-enabled driver doesn't fire a voltage spike.
 void flushControlState() {
     motor.PID_velocity.reset();
     motor.shaft_velocity = 0.0f;
     ramped_target        = 0.0f;
 }
 
-// Clear a latched DRV8313 OCP/TSD fault by pulsing nSLEEP low.
-// Datasheet minimum: >=30 µs low, >=1 ms wake delay.
+// Pulse nSLEEP low ≥30 µs to clear a latched DRV8313 OCP/TSD fault.
 void resetDriver() {
     motor.disable();
     flushControlState();
@@ -91,15 +84,12 @@ void resetDriver() {
     motor.enable();
 }
 
-// Emergency stop: kill target, disable motor, drop PID + LPF state.
+// Emergency stop: kill target, disable driver, zero control state.
 void haltMotor() {
     target = 0.0f;
     motor.disable();
     flushControlState();
 }
-
-// True while the DRV8313 reports an active fault (nFAULT open-drain, pulled up).
-bool driverFaulted() { return digitalRead(PIN_NFT) == LOW; }
 
 void doTarget (char* arg) { command.scalar(&target, arg); }
 void doCurrent(char* arg) { command.scalar(&motor.current_limit, arg); }
@@ -109,7 +99,7 @@ void doTf     (char* arg) { command.scalar(&motor.LPF_velocity.Tf, arg); }
 void doR      (char* arg) { command.scalar(&motor.phase_resistance, arg); }
 void doK      (char* arg) { command.scalar(&motor.KV_rating, arg); }
 void doM      (char* arg) { float v; command.scalar(&v, arg); motor.motion_downsample = (unsigned int)v; }
-void doA      (char* arg) { command.scalar(&accel, arg); }
+void doAccel  (char* arg) { command.scalar(&accel, arg); }
 void doReset  (char* arg) { (void)arg; resetDriver(); Serial.println("driver reset"); }
 
 void setup() {
@@ -119,13 +109,12 @@ void setup() {
 
     pinMode(PIN_NSP, OUTPUT);
     digitalWrite(PIN_NSP, HIGH);
-    pinMode(PIN_NFT, INPUT_PULLUP);
     delay(2);
 
     encoder.quadrature = Quadrature::ON;
     encoder.pullup     = Pullup::USE_INTERN;
     encoder.init();
-    encoder.enableInterrupts(doA, doB, doZ);
+    encoder.enableInterrupts(doA, doB);
     motor.linkSensor(&encoder);
 
     driver.voltage_power_supply = SUPPLY_VOLTAGE;
@@ -166,25 +155,17 @@ void setup() {
     command.add('R', doR,       "phase R");
     command.add('K', doK,       "KV rating");
     command.add('M', doM,       "motion downsample");
-    command.add('A', doA,       "velocity accel rad/s^2");
+    command.add('A', doAccel,   "velocity accel rad/s^2");
     command.add('X', doReset,   "reset driver (clear latched fault)");
     Serial.println("Ready.");
 }
 
-// Format a float as fixed-point integer parts to dodge soft-float printf.
-// ESP32-C3/C6 have no FPU; every %.2f adds ~300 us and can stall the FOC
-// loop for several ms when several args appear on one line.
+// Fixed-point printf args — C6 has no FPU and %.2f costs ~300 µs per arg.
 #define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
 #define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
 
+// Never returns — loopTask preemption on single-core ESP32 variants would stall FOC ~4 ms every 2 s. See README.
 void loop() {
-    // Spin in place rather than returning — arduino-esp32 runs loop() inside a
-    // FreeRTOS task that context-switches every ~2 s on single-core variants
-    // (S2/C3/C6), preempting us for ~4 ms. At 50 rad/s × 11 pp that's a full
-    // electrical cycle of frozen SVPWM, audible as a hard click. Known issue
-    // on both C3 and C6; SimpleFOC community fix. Refs: simplefoc/Arduino-FOC#292,
-    // community.simplefoc.com/t/esp32-c6-strange-spikes-in-loop-execution-time/8003.
-
     static uint32_t prev_loop_us = 0;
     static uint32_t max_loop_us  = 0;
     static uint32_t last_active_ms = 0;
@@ -202,11 +183,6 @@ void loop() {
 
         command.run();
 
-        if (motor.enabled && driverFaulted()) {
-            Serial.println("nFAULT: DRV8313 fault asserted — halted");
-            haltMotor();
-        }
-
         bool want_motion  = fabs(target) > IDLE_TARGET_THRESH;
         bool ramping_down = fabs(ramped_target) > IDLE_TARGET_THRESH;
 
@@ -214,7 +190,7 @@ void loop() {
             last_active_ms = millis();
 
             if (!motor.enabled) {
-                // Coming out of idle or halt — full nSLEEP reset to clear any latched fault.
+                // Full nSLEEP reset on wake clears any latched fault before commutation resumes.
                 resetDriver();
                 enable_time_ms = millis();
                 stall_start_ms = 0;
@@ -237,8 +213,7 @@ void loop() {
             }
         } else {
             stall_start_ms = 0;
-            // While the ramp is still winding down, keep the idle timer fresh so
-            // the motor stays engaged driving the deceleration.
+            // Keep the idle timer fresh while the ramp is still decelerating.
             if (ramping_down) last_active_ms = millis();
             if (motor.enabled && !ramping_down && millis() - last_active_ms > IDLE_DISABLE_MS) {
                 motor.disable();
@@ -251,8 +226,7 @@ void loop() {
 
         if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
             last_print_ms = millis();
-            // Skip the write if the TX ring is too full to absorb the line in
-            // one shot; dropped telemetry beats blocking the FOC loop.
+            // Skip the write if the TX ring can't take the whole line without blocking.
             if (Serial.availableForWrite() >= 96) {
                 Serial.printf("tgt:%ld.%02ld ramp:%ld.%02ld vel:%ld.%02ld ang:%ld.%ld en:%d maxLp:%luus\n",
                               FX_HI(target,         100), FX_LO(target,         100),
