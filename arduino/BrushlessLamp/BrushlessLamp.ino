@@ -27,9 +27,9 @@ constexpr uint32_t FOC_ISR_HZ      = 2000;     // hw-timer rate for motor.loopFO
 constexpr uint32_t LED_PWM_FREQ_HZ  = 25000;
 constexpr uint8_t  LED_PWM_RES_BIT  = 10;
 constexpr uint16_t LED_PWM_MAX      = (1u << LED_PWM_RES_BIT) - 1;
-constexpr float    LED_GAMMA        = 2.2f;
 constexpr float    LEDS_OFF_THRESH  = 0.5f;  // rad — shaft_angle at or below this means lamp fully off
 constexpr float    LEDS_FULL_THRESH = 3.0f;  // rad — shaft_angle at or above this means lamp at configured brightness
+constexpr float    LED_RAMP_PER_SEC = 60.0f; // bri/cct units (0-100) per second — full swing takes ~1.7 s
 
 constexpr int   POLE_PAIRS     = 11;
 constexpr int   ENCODER_CPR    = 1024;
@@ -110,7 +110,9 @@ uint8_t cct            = 50;               // 0..100, 0 = all WW, 100 = all CW
 enum KnobMode { MODE_POSITION, MODE_BRIGHTNESS };
 KnobMode knob_mode = MODE_POSITION;
 
-uint16_t gamma_lut[101];                   // duty 0..LED_PWM_MAX indexed by brightness 0..100
+float    effective_bri = 50.0f;            // bri with LED_RAMP_PER_SEC smoothing applied
+float    effective_cct = 50.0f;            // cct with LED_RAMP_PER_SEC smoothing applied
+uint32_t led_ramp_last_ms = 0;
 uint16_t last_duty_ww = 0xFFFF;            // cached last-written LEDC values; 0xFFFF forces first update
 uint16_t last_duty_cw = 0xFFFF;
 
@@ -136,32 +138,45 @@ bool       long_reset_done = false;
 #define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
 #define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
 
-// Populate the gamma lookup table (call once at setup) so the hot path is a straight lookup.
-void buildGammaLUT() {
-    for (int i = 0; i <= 100; i++) {
-        float x = i / 100.0f;
-        gamma_lut[i] = (uint16_t)(powf(x, LED_GAMMA) * LED_PWM_MAX + 0.5f);
-    }
+// Ramp effective_bri / effective_cct toward the user/Matter-set values at LED_RAMP_PER_SEC so step changes fade.
+void updateLedRamp() {
+    uint32_t now = millis();
+    if (led_ramp_last_ms == 0) { led_ramp_last_ms = now; return; }
+    uint32_t dt_ms = now - led_ramp_last_ms;
+    if (dt_ms < 5) return;
+    led_ramp_last_ms = now;
+    float step = LED_RAMP_PER_SEC * (float)dt_ms / 1000.0f;
+    float tb = (float)brightness;
+    if      (effective_bri < tb - step) effective_bri += step;
+    else if (effective_bri > tb + step) effective_bri -= step;
+    else                                 effective_bri  = tb;
+    float tc = (float)cct;
+    if      (effective_cct < tc - step) effective_cct += step;
+    else if (effective_cct > tc + step) effective_cct -= step;
+    else                                 effective_cct  = tc;
 }
 
-// Write the current brightness/cct to the two PWM channels; intensity ramps linearly with shaft_angle from LEDS_OFF_THRESH to LEDS_FULL_THRESH.
+// Write the current effective brightness / cct to the two PWM channels; intensity ramps linearly with shaft_angle from LEDS_OFF_THRESH to LEDS_FULL_THRESH.
 void updateLEDs() {
+    updateLedRamp();
+
     float a = motor.shaft_angle;
     float fade;
     if      (a <= LEDS_OFF_THRESH)  fade = 0.0f;
     else if (a >= LEDS_FULL_THRESH) fade = 1.0f;
     else                             fade = (a - LEDS_OFF_THRESH) / (LEDS_FULL_THRESH - LEDS_OFF_THRESH);
 
-    uint32_t base = (uint32_t)(gamma_lut[brightness] * fade);
-    uint16_t want_ww = (uint16_t)((base * (100 - cct)) / 100);
-    uint16_t want_cw = (uint16_t)((base * cct)        / 100);
+    uint32_t base = (uint32_t)((effective_bri * LED_PWM_MAX / 100.0f) * fade);
+    uint32_t ecct = (uint32_t)(effective_cct + 0.5f);
+    uint16_t want_ww = (uint16_t)((base * (100 - ecct)) / 100);
+    uint16_t want_cw = (uint16_t)((base * ecct)        / 100);
     if (want_ww != last_duty_ww) { ledcWrite(PIN_LED_WW, want_ww); last_duty_ww = want_ww; }
     if (want_cw != last_duty_cw) { ledcWrite(PIN_LED_CW, want_cw); last_duty_cw = want_cw; }
 }
 
 // Blocking 5x fade-out/fade-in on both LED channels as the factory-reset warning (~480 ms per pulse).
 void pulseLEDs(uint8_t n) {
-    uint32_t base = gamma_lut[brightness];
+    uint32_t base = (uint32_t)((uint32_t)brightness * LED_PWM_MAX / 100);
     uint16_t base_ww = (uint16_t)((base * (100 - cct)) / 100);
     uint16_t base_cw = (uint16_t)((base * cct)        / 100);
     for (uint8_t i = 0; i < n; i++) {
@@ -305,6 +320,8 @@ uint16_t cctToMireds(uint8_t cct_val) {
 
 // Matter pushed a new state — translate into local commanded/cct.
 bool onMatterChange(bool state, uint8_t level, uint16_t mireds) {
+    Serial.printf("matter->dev: state=%d level=%u mireds=%u echo=%d\n",
+                  state ? 1 : 0, level, mireds, matter_echo ? 1 : 0);
     if (matter_echo) return true;
     float new_cmd = state ? constrain(matterBrightnessToCmd(level), POS_MIN, POS_MAX) : POS_MIN;
     if (fabs(new_cmd - commanded) > 1e-3f) {
@@ -320,24 +337,29 @@ bool onMatterChange(bool state, uint8_t level, uint16_t mireds) {
     return true;
 }
 
-// Push local state back to Matter when it drifts away from the last-sent snapshot.
+// Push local state back to Matter when it drifts meaningfully from the last-sent snapshot.
 void syncMatterIfDirty() {
     if (!Matter.isDeviceCommissioned()) return;
-    static float   last_sent_cmd = -1e9f;
-    static uint8_t last_sent_cct = 255;
+    static uint32_t last_sync_ms = 0;
+    static uint8_t  last_sent_bri = 255;
+    static uint8_t  last_sent_cct = 255;
+    static bool     last_sent_on  = false;
+    uint32_t now = millis();
+    if (now - last_sync_ms < 200) return;                        // rate-limit outbound chatter
     bool on_state = commanded > LEDS_OFF_THRESH;
     uint8_t bri = cmdToMatterBrightness(commanded);
     if (on_state && bri == 0) bri = 1;
-    uint16_t mireds = cctToMireds(cct);
-    if (fabs(commanded - last_sent_cmd) < 0.5f && cct == last_sent_cct) return;
+    if (on_state == last_sent_on && bri == last_sent_bri && cct == last_sent_cct) return;
     matter_echo = true;
     matter_light.setOnOff(on_state);
     if (on_state) matter_light.setBrightness(bri);
-    matter_light.setColorTemperature(mireds);
+    matter_light.setColorTemperature(cctToMireds(cct));
     matter_light.updateAccessory();
     matter_echo = false;
-    last_sent_cmd = commanded;
+    last_sent_on = on_state;
+    last_sent_bri = bri;
     last_sent_cct = cct;
+    last_sync_ms = now;
 }
 
 // Print the QR-code URL and manual pairing code exactly once if the node isn't commissioned yet.
@@ -349,22 +371,9 @@ void printMatterPairing() {
     matter_qr_printed = true;
 }
 
-// Once commissioning finishes, drop the BLE controller after a short delay to reclaim ~60 KB of heap.
+// Keep BLE resident — the arduino-esp32 Matter library uses it in the WiFi-reconnect recovery path and releasing it causes a use-after-free on Core 0 when WiFi flaps.
 void handleBLERelease() {
-    if (ble_released) return;
-    if (!Matter.isDeviceCommissioned()) return;
-    if (!ble_release_pending) {
-        ble_release_pending = true;
-        ble_release_start_ms = millis();
-        Serial.println("Matter commissioned — releasing BLE in 3 s");
-        return;
-    }
-    if (millis() - ble_release_start_ms < BLE_RELEASE_DELAY_MS) return;
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
-    esp_bt_mem_release(ESP_BT_MODE_BLE);
-    ble_released = true;
-    Serial.printf("Matter commissioned — BLE released, free heap: %lu\n", (unsigned long)ESP.getFreeHeap());
+    (void)ble_released; (void)ble_release_pending; (void)ble_release_start_ms;
 }
 
 void setup() {
@@ -377,7 +386,6 @@ void setup() {
     pinMode(PIN_BTN, INPUT_PULLUP);
     delay(2);
 
-    buildGammaLUT();
     ledcAttach(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
     ledcAttach(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
     ledcWrite(PIN_LED_WW, 0);
@@ -428,6 +436,8 @@ void setup() {
     if (speed_idx >= VELOCITY_PRESET_N) speed_idx = DEFAULT_SPEED_IDX;
     if (brightness > 100) brightness = 50;
     if (cct > 100)        cct        = 50;
+    effective_bri = (float)brightness;
+    effective_cct = (float)cct;
     motor.velocity_limit = VELOCITY_PRESETS[speed_idx];
 
     // Anchor shaft_angle to the persisted commanded so the motor doesn't seek on boot.
