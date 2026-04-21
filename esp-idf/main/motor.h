@@ -18,10 +18,19 @@ float motor_get_shaft_angle();
 // Velocity preset (cycles via double-click). Mirrors VELOCITY_PRESETS[].
 void motor_set_velocity_preset(uint8_t idx);
 
-// While motor is idle-disabled, snap commanded to shaft_angle so subsequent user input
-// is relative to the physical shaft. MUST be called BEFORE input_poll each iteration —
-// otherwise the re-anchor clobbers knob deltas that arrived this tick.
-void motor_idle_anchor();
+// True when SimpleFOC has the motor in the enabled state (driver actively producing torque).
+// Used by the knob handler to decide whether to anchor a detent to shaft_angle.
+bool motor_is_enabled();
 
-// Per-iteration tick: ramp_target, motor.loopFOC(), motor.move(), stall detection, LED update.
+// One-shot flag: returns true iff a stall event occurred since the last call, and clears it.
+// The app layer uses this to force-push the corrected position to Matter after fault_recover
+// snaps g_commanded to shaft_angle.
+bool motor_consume_stall_event();
+
+// Per-iteration tick: ramp_target, motor.move(), stall detection, LED update.
+// loopFOC() is called from the 1 kHz GPTimer ISR set up by motor_start_foc_timer().
 void motor_tick();
+
+// Start the 1 kHz GPTimer that drives motor.loopFOC() in ISR context. Call AFTER
+// esp_matter::start() returns so commissioning interrupts get priority first.
+void motor_start_foc_timer();

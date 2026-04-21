@@ -1,5 +1,8 @@
 // Brushless Lamp — closed-loop FOC position control with rotary-encoder user input
 // Seeed XIAO ESP32-C6 + SimpleFOC Mini (DRV8313) + 4015 BLDC gimbal + MT6701 ABZ encoder
+// Matter pattern mirrors CylinderLamp (proven working on C3 with the same arduino-esp32 Matter library).
+
+bool btInUse(void) { return true; }   // keep BLE controller memory through arduino-esp32 init so Matter commissioning works
 
 #include <SimpleFOC.h>
 #include <Preferences.h>
@@ -7,7 +10,6 @@
 #include "driver/pulse_cnt.h"
 #include "esp_bt.h"
 #include "esp_system.h"
-#include "esp_task_wdt.h"
 #include "nvs_flash.h"
 
 constexpr uint8_t PIN_PWM_A = 18;    // D10 — DRV8313 IN1
@@ -26,10 +28,8 @@ constexpr uint8_t PIN_LED_WW = 23;   // D5 — AO3400A gate for warm-white chann
 constexpr uint8_t PIN_LED_CW = 16;   // D6 — AO3400A gate for cool-white channel
 
 constexpr uint32_t PWM_FREQ_HZ     = 25000;
-constexpr uint32_t FOC_ISR_HZ      = 1000;     // hw-timer rate for motor.loopFOC(); 1 kHz gives enough SVPWM updates while leaving plenty of CPU for the Matter/WiFi init storm
+constexpr uint32_t FOC_ISR_HZ      = 1000;     // hw-timer rate for motor.loopFOC(); 1 kHz keeps SVPWM smooth and inaudible
 constexpr uint32_t WDT_TIMEOUT_MS  = 10000;    // main-loop watchdog — reboots the chip if loop() hangs
-constexpr uint32_t CRASH_CLEAR_MS  = 15000;    // clear the consecutive-crash counter once we've been alive this long
-constexpr uint8_t  CRASH_WIPE_LIMIT = 3;       // after this many consecutive panic reboots, wipe NVS and start fresh
 constexpr uint32_t LED_PWM_FREQ_HZ  = 25000;
 constexpr uint8_t  LED_PWM_RES_BIT  = 10;
 constexpr uint16_t LED_PWM_MAX      = (1u << LED_PWM_RES_BIT) - 1;
@@ -52,7 +52,7 @@ constexpr float PID_VEL_D           = 0.0f;
 constexpr float PID_VEL_OUTPUT_RAMP = 1000.0f;
 constexpr float LPF_VEL_TF          = 0.02f;
 constexpr float PID_ANGLE_P         = 3.0f;
-constexpr float ACCEL_DEFAULT       = 10.0f;   // rad/s² — trapezoidal accel/decel cap; tune via 'A'
+constexpr float ACCEL_DEFAULT       = 20.0f;   // rad/s² — gentle ramp; tune via 'A' serial command
 constexpr int   MOTION_DOWNSAMPLE   = 5;
 
 constexpr uint32_t PRINT_INTERVAL_MS = 1000;
@@ -65,17 +65,17 @@ constexpr uint32_t STALL_TIMEOUT_MS    = 500;
 constexpr uint32_t STALL_WARMUP_MS     = 800;
 
 constexpr float POS_MIN       = 0.0f;          // rad — soft lower limit
-constexpr float POS_MAX       = 30.0f;         // rad — soft upper limit; keeps Matter brightness → motor travel under ~1.5 s at max speed preset so the app feels responsive
-constexpr float RAD_PER_CLICK = 0.3f;          // rad per encoder detent; ~100 detents spans full travel, matching knob-to-range feel of CylinderLamp
+constexpr float POS_MAX       = 2258.0f;       // rad — soft upper limit; matches CylinderLamp's MAX_STEPS=1,150,000 over a NEMA-14 stepper × 16 microsteps = 359.4 motor revs = 2258 rad. Full travel at top speed (70 rad/s) ≈ 32 s, same as CylinderLamp.
+constexpr float RAD_PER_CLICK = 56.5f;         // rad per encoder detent; CylinderLamp's STEPS_PER_CLICK=28,750 over MAX_STEPS=1,150,000 → 40 detents per full travel → 56.5 rad/click here
 
 constexpr uint32_t BTN_DEBOUNCE_MS   = 30;
 constexpr uint32_t BTN_DBL_GAP_MS    = 400;
 constexpr uint32_t BTN_LONG_WARN_MS  = 5000;
 constexpr uint32_t BTN_LONG_RESET_MS = 9000;
 
-constexpr float   VELOCITY_PRESETS[] = {10.0f, 15.0f, 20.0f, 25.0f};
+constexpr float   VELOCITY_PRESETS[] = {5.0f, 10.0f, 20.0f, 30.0f};   // four speed presets; double-click cycles
 constexpr uint8_t VELOCITY_PRESET_N  = sizeof(VELOCITY_PRESETS) / sizeof(VELOCITY_PRESETS[0]);
-constexpr uint8_t DEFAULT_SPEED_IDX  = 3;    // 25 rad/s — gives Matter sliders ~1.2 s end-to-end on the new POS_MAX
+constexpr uint8_t DEFAULT_SPEED_IDX  = 1;    // 10 rad/s — second preset
 
 constexpr uint32_t PERSIST_DEBOUNCE_MS = 2000;    // wait this long after the last change before writing NVS
 
@@ -93,11 +93,15 @@ pcnt_unit_handle_t pcnt_unit = nullptr;
 hw_timer_t*        foc_timer = nullptr;
 
 MatterColorTemperatureLight matter_light;
-volatile bool matter_echo = false;                // set while we push local state to Matter — prevents onMatterChange feedback
+std::atomic<bool> matter_echo{false};             // set while we push local state to Matter — prevents onMatterChange feedback (cross-task: written by loop, read by CHIP callback)
 bool          matter_qr_printed = false;
 bool          ble_release_pending = false;
 bool          ble_released = false;
 uint32_t      ble_release_start_ms = 0;
+bool          motor_init_done = false;            // set by initMotorAndFoc once FOC alignment + hw-timer ISR are running
+uint32_t      commissioned_at_ms = 0;             // millis() when we first observed Matter.isDeviceCommissioned() going true
+float         boot_commanded = 0.0f;              // commanded loaded from NVS at boot; used by initMotorAndFoc() to anchor the rotor offset
+bool          matter_ready = false;               // true if Matter.begin() ran successfully; false if we skipped it (WiFi pre-connect failed)
 
 void IRAM_ATTR doA() { encoder.handleA(); }
 void IRAM_ATTR doB() { encoder.handleB(); }
@@ -105,13 +109,13 @@ void IRAM_ATTR doB() { encoder.handleB(); }
 // Runs at FOC_ISR_HZ — keeps SVPWM locked to the rotor regardless of what the scheduler is doing.
 void IRAM_ATTR onFocTick() { motor.loopFOC(); }
 
-float   commanded      = 0.0f;             // user-commanded position, rad (set by knob / G)
-float   target         = 0.0f;             // trapezoidal-profile position fed to motor.move(), rad
-float   target_vel     = 0.0f;             // current velocity of target, rad/s (internal state)
-float   accel          = ACCEL_DEFAULT;    // rad/s² — ramp rate for target_vel
-uint8_t speed_idx      = DEFAULT_SPEED_IDX;
-uint8_t brightness     = 50;               // 0..100, logarithmic via gamma LUT
-uint8_t cct            = 50;               // 0..100, 0 = all WW, 100 = all CW
+std::atomic<float>   commanded{0.0f};      // user-commanded position, rad (cross-task: written by Matter callback / knob / G; read everywhere)
+float                target         = 0.0f;             // trapezoidal-profile position fed to motor.move(), rad (loop-only)
+float                target_vel     = 0.0f;             // current velocity of target, rad/s (loop-only)
+float                accel          = ACCEL_DEFAULT;    // rad/s² — ramp rate for target_vel
+uint8_t              speed_idx      = DEFAULT_SPEED_IDX;
+uint8_t              brightness     = 50;               // 0..100, logarithmic via gamma LUT
+std::atomic<uint8_t> cct{50};              // 0..100, 0 = all WW, 100 = all CW (cross-task: written by Matter callback / W command, read by updateLEDs / sync)
 
 enum KnobMode { MODE_POSITION, MODE_BRIGHTNESS };
 KnobMode knob_mode = MODE_POSITION;
@@ -122,11 +126,11 @@ uint32_t led_ramp_last_ms = 0;
 uint16_t last_duty_ww = 0xFFFF;            // cached last-written LEDC values; 0xFFFF forces first update
 uint16_t last_duty_cw = 0xFFFF;
 
-bool     dirty_pos      = false;
-bool     dirty_spd      = false;
-bool     dirty_bri      = false;
-bool     dirty_cct      = false;
-uint32_t last_change_ms = 0;
+std::atomic<bool> dirty_pos{false};        // pending NVS-write flags (cross-task: dirty_pos/dirty_cct also set by Matter callback)
+std::atomic<bool> dirty_spd{false};
+std::atomic<bool> dirty_bri{false};
+std::atomic<bool> dirty_cct{false};
+uint32_t          last_change_ms = 0;
 
 int      pcnt_prev       = 0;
 
@@ -180,28 +184,56 @@ void updateLEDs() {
     if (want_cw != last_duty_cw) { ledcWrite(PIN_LED_CW, want_cw); last_duty_cw = want_cw; }
 }
 
-// Blocking 5x fade-out/fade-in on both LED channels as the factory-reset warning (~480 ms per pulse).
+// Blocking N-pulse warning animation on both LED channels (factory-reset warning). Smooth fade-in at the very start (so it doesn't snap from 0 to peak), N pulses in the middle, and ends at 0 (so it doesn't snap back to whatever the normal LED state was). Pauses the FOC ISR + disables the motor so the 500 Hz interrupt doesn't jitter the per-step delay. Pulse peak is the configured brightness/cct so the warning is visible even when the lamp's current display state is OFF. Quadratic step curve (PWM ~ step²) so the fade looks perceptually linear at the dim end where eye sensitivity is highest.
 void pulseLEDs(uint8_t n) {
-    uint32_t base = (uint32_t)((uint32_t)brightness * LED_PWM_MAX / 100);
-    uint16_t base_ww = (uint16_t)((base * (100 - cct)) / 100);
-    uint16_t base_cw = (uint16_t)((base * cct)        / 100);
-    for (uint8_t i = 0; i < n; i++) {
-        for (int step = 20; step >= 0; step--) {
-            ledcWrite(PIN_LED_WW, (uint16_t)((uint32_t)base_ww * step / 20));
-            ledcWrite(PIN_LED_CW, (uint16_t)((uint32_t)base_cw * step / 20));
-            delay(8);
-        }
-        delay(80);
-        for (int step = 0; step <= 20; step++) {
-            ledcWrite(PIN_LED_WW, (uint16_t)((uint32_t)base_ww * step / 20));
-            ledcWrite(PIN_LED_CW, (uint16_t)((uint32_t)base_cw * step / 20));
-            delay(8);
-        }
-        delay(80);
+    bool paused_foc = false;
+    if (motor_init_done && foc_timer) {
+        timerStop(foc_timer);
+        paused_foc = true;
     }
+    if (motor_init_done) {
+        motor.disable();
+    }
+
+    uint32_t base    = (uint32_t)brightness * LED_PWM_MAX / 100;
+    uint8_t  ecct    = (uint8_t)cct.load(std::memory_order_relaxed);
+    uint16_t peak_ww = (uint16_t)((base * (100 - ecct)) / 100);
+    uint16_t peak_cw = (uint16_t)((base * ecct)         / 100);
+
+    constexpr int FADE_STEPS   = 60;
+    constexpr int FADE_STEP_MS = 3;
+    constexpr int HOLD_MS      = 80;
+
+    auto write_step = [&](int step) {
+        uint32_t num = (uint32_t)step * (uint32_t)step;
+        uint32_t den = (uint32_t)FADE_STEPS * (uint32_t)FADE_STEPS;
+        ledcWrite(PIN_LED_WW, (uint16_t)((uint32_t)peak_ww * num / den));
+        ledcWrite(PIN_LED_CW, (uint16_t)((uint32_t)peak_cw * num / den));
+    };
+    auto fade_up   = [&]() { for (int s = 0; s <= FADE_STEPS; s++) { write_step(s); delay(FADE_STEP_MS); } };
+    auto fade_down = [&]() { for (int s = FADE_STEPS; s >= 0; s--) { write_step(s); delay(FADE_STEP_MS); } };
+
+    // Smooth entry: ramp from 0 → peak so we don't snap from off-state to full brightness.
+    fade_up();
+    delay(HOLD_MS);
+
+    // N fade-down/fade-up cycles, but skip the trailing fade-up on the last iteration so we end at 0 with a clean exit instead of snapping back to whatever the normal LED state is.
+    for (uint8_t i = 0; i < n; i++) {
+        fade_down();
+        delay(HOLD_MS);
+        if (i < (uint8_t)(n - 1)) {
+            fade_up();
+            delay(HOLD_MS);
+        }
+    }
+
     last_duty_ww = 0xFFFF;
     last_duty_cw = 0xFFFF;
     updateLEDs();
+
+    if (paused_foc) {
+        timerStart(foc_timer);
+    }
 }
 
 // Zero PID + filtered velocity so the re-enabled driver doesn't fire a voltage spike.
@@ -352,20 +384,25 @@ void syncMatterIfDirty() {
     static uint8_t  last_sent_cct = 255;
     static bool     last_sent_on  = false;
     uint32_t now = millis();
-    if (now - last_sync_ms < 200) return;                        // rate-limit outbound chatter
-    bool on_state = commanded > LEDS_OFF_THRESH;
-    uint8_t bri = cmdToMatterBrightness(commanded);
+    if (now - last_sync_ms < 100) return;                        // rate-limit outbound chatter
+    float    cmd_now = commanded;
+    uint8_t  cct_now = cct;
+    bool on_state = cmd_now > LEDS_OFF_THRESH;
+    uint8_t bri = cmdToMatterBrightness(cmd_now);
     if (on_state && bri == 0) bri = 1;
-    if (on_state == last_sent_on && bri == last_sent_bri && cct == last_sent_cct) return;
+    if (on_state == last_sent_on && bri == last_sent_bri && cct_now == last_sent_cct) return;
     matter_echo = true;
+    // Espressif's documented pattern for mutating cluster attributes from outside the CHIP event-loop task is to take the stack lock; without it we race the CHIP task's own writes during inbound commands.
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
     matter_light.setOnOff(on_state);
     if (on_state) matter_light.setBrightness(bri);
-    matter_light.setColorTemperature(cctToMireds(cct));
+    matter_light.setColorTemperature(cctToMireds(cct_now));
     matter_light.updateAccessory();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
     matter_echo = false;
     last_sent_on = on_state;
     last_sent_bri = bri;
-    last_sent_cct = cct;
+    last_sent_cct = cct_now;
     last_sync_ms = now;
 }
 
@@ -383,46 +420,12 @@ void handleBLERelease() {
     (void)ble_released; (void)ble_release_pending; (void)ble_release_start_ms;
 }
 
-// Wipe every NVS namespace so the next boot starts like a freshly-flashed device.
-static void wipeAllNvsAndReboot(const char* reason) {
-    Serial.printf("Auto-recovery: %s — wiping NVS and rebooting fresh\n", reason);
-    Serial.flush();
-    nvs_flash_erase();
-    delay(500);
-    ESP.restart();
-}
+// Arm-once-then-reboot guard against the upstream chip[DL] WiFi-reconnect crash (MTVAL 0x000000a8). We only trip on disconnect AFTER we've been online at least once — during the initial commissioning attempt WiFi flaps via many STA_DISCONNECTED events before it ever succeeds, and rebooting on those would prevent pairing from completing.
+static volatile bool wifi_reboot_armed = false;
 
-// Consecutive panic-reboot counter. Reset once we've survived long enough (see CRASH_CLEAR_MS in loop()).
-static Preferences boot_prefs;
-static bool        crashes_cleared = false;
-
-void setup() {
-    Serial.begin(115200);
-    delay(1500);
-    Serial.println("=== BrushlessLamp: closed-loop FOC position ===");
-
-    esp_reset_reason_t reason = esp_reset_reason();
-    boot_prefs.begin("boot", false);
-    uint8_t crashes = boot_prefs.getUChar("crashes", 0);
-    bool last_was_crash = (reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT);
-    if (last_was_crash) crashes++; else crashes = 0;
-    Serial.printf("boot: reset_reason=%d crashes=%u\n", (int)reason, crashes);
-    if (crashes >= CRASH_WIPE_LIMIT) {
-        boot_prefs.putUChar("crashes", 0);
-        boot_prefs.end();
-        wipeAllNvsAndReboot("consecutive crashes hit limit");
-    }
-    boot_prefs.putUChar("crashes", crashes);
-
-    pinMode(PIN_NSP, OUTPUT);
-    digitalWrite(PIN_NSP, HIGH);
-    pinMode(PIN_BTN, INPUT_PULLUP);
-    delay(2);
-
-    ledcAttach(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
-    ledcAttach(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
-    ledcWrite(PIN_LED_WW, 0);
-    ledcWrite(PIN_LED_CW, 0);
+// Bring up the motor + driver + FOC alignment + 500 Hz hw-timer ISR. Deferred until commissioning settles so SPAKE2+ has uncontested CPU.
+void initMotorAndFoc() {
+    if (motor_init_done) return;
 
     encoder.quadrature = Quadrature::ON;
     encoder.pullup     = Pullup::USE_INTERN;
@@ -452,33 +455,68 @@ void setup() {
     motor.LPF_velocity.Tf          = LPF_VEL_TF;
     motor.P_angle.P                = PID_ANGLE_P;
 
+    // Required: SimpleFOC's init/initFOC have unguarded `monitor_port->print()` calls in some code paths; without this the printf below silently fails to show and initFOC can hang on a null sink.
     motor.useMonitoring(Serial);
     Serial.printf("motor.init()=%d\n", motor.init());
 
     int foc_ok = motor.initFOC();
     Serial.printf("motor.initFOC()=%d  zero_elec=%.4f  dir=%d\n",
-                  foc_ok, motor.zero_electric_angle, (int)motor.sensor_direction);
+                  foc_ok, (double)motor.zero_electric_angle, (int)motor.sensor_direction);
     if (!foc_ok) Serial.println("FOC init failed");
+
+    motor.velocity_limit = VELOCITY_PRESETS[speed_idx];
+
+    // Anchor shaft_angle to the value commanded had at boot so the rotor reads as that physical position; if Matter changed commanded between boot and now, target stays at the new commanded so the motor seeks there.
+    motor.sensor_offset -= boot_commanded;
+    target = commanded;
+    target_vel = 0.0f;
+    motor.loopFOC();
+    updateLEDs();
+
+    foc_timer = timerBegin(1000000);
+    timerAttachInterrupt(foc_timer, &onFocTick);
+    timerAlarm(foc_timer, 1000000 / FOC_ISR_HZ, true, 0);
+
+    motor_init_done = true;
+    Serial.printf("motor + FOC ready; free heap: %lu\n", (unsigned long)ESP.getFreeHeap());
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(1500);
+    Serial.println("=== BrushlessLamp: closed-loop FOC position ===");
+
+    // If the previous boot ended in a panic, enter safe mode: we'll skip Matter.begin() so the chip stays alive instead of crash-looping in the upstream chip[DL] reconnect path. Button polling stays active so the user can long-press 9 s to factory-reset out of safe mode.
+    esp_reset_reason_t reason = esp_reset_reason();
+    safe_mode = (reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT);
+    Serial.printf("boot reason: %d  free heap: %lu  safe_mode=%d\n",
+                  (int)reason, (unsigned long)ESP.getFreeHeap(), (int)safe_mode);
+
+    pinMode(PIN_NSP, OUTPUT);
+    digitalWrite(PIN_NSP, HIGH);
+    pinMode(PIN_BTN, INPUT_PULLUP);
+    delay(2);
+
+    ledcAttach(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
+    ledcAttach(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RES_BIT);
+    ledcWrite(PIN_LED_WW, 0);
+    ledcWrite(PIN_LED_CW, 0);
 
     prefs.begin("blamp", false);
     commanded  = constrain(prefs.getFloat("pos", POS_MIN), POS_MIN, POS_MAX);
+    boot_commanded = commanded;
     target     = commanded;
     speed_idx  = prefs.getUChar("spd", DEFAULT_SPEED_IDX);
     brightness = prefs.getUChar("bri", 50);
-    cct        = prefs.getUChar("cct", 50);
+    uint8_t cct_loaded = prefs.getUChar("cct", 50);
     if (speed_idx >= VELOCITY_PRESET_N) speed_idx = DEFAULT_SPEED_IDX;
     if (brightness > 100) brightness = 50;
-    if (cct > 100)        cct        = 50;
+    if (cct_loaded > 100) cct_loaded = 50;
+    cct = cct_loaded;
     effective_bri = (float)brightness;
-    effective_cct = (float)cct;
-    motor.velocity_limit = VELOCITY_PRESETS[speed_idx];
-
-    // Anchor shaft_angle to the persisted commanded so the motor doesn't seek on boot.
-    motor.sensor_offset -= commanded;
-    motor.loopFOC();
-    updateLEDs();
+    effective_cct = (float)cct_loaded;
     Serial.printf("loaded: commanded=%.2f rad  speed_idx=%u (%.1f rad/s)  bri=%u  cct=%u\n",
-                  commanded, speed_idx, motor.velocity_limit, brightness, cct);
+                  (double)boot_commanded, speed_idx, (double)VELOCITY_PRESETS[speed_idx], brightness, cct_loaded);
 
     pinMode(PIN_ROT_A, INPUT_PULLUP);
     pinMode(PIN_ROT_B, INPUT_PULLUP);
@@ -519,22 +557,55 @@ void setup() {
     foc_cmd.add('W', doCct,        "CCT mix 0..100 (0=WW,100=CW)");
     foc_cmd.add('X', doReset,   "reset driver (clear latched fault)");
 
-    matter_light.begin(commanded > LEDS_OFF_THRESH, cmdToMatterBrightness(commanded), cctToMireds(cct));
-    matter_light.onChange(onMatterChange);
-    Matter.begin();
-    Serial.printf("free heap after Matter.begin(): %lu\n", (unsigned long)ESP.getFreeHeap());
+    if (!safe_mode) {
+        // Register the WiFi-disconnect reboot guard BEFORE Matter.begin() so our handler is dispatched first by the Arduino event loop (FIFO order). This lets us ESP.restart() before chip[DL] hits its broken reconnect path on subsequent disconnects. Inline lambda so the Arduino preprocessor's auto-prototype generator doesn't trip on arduino_event_id_t.
+        WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+            switch (event) {
+                case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+                    if (!wifi_reboot_armed) {
+                        wifi_reboot_armed = true;
+                        Serial.println("WiFi up — disconnect-reboot guard armed");
+                    }
+                    break;
+                case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+                    if (wifi_reboot_armed) {
+                        Serial.println("WiFi STA disconnected post-commission — rebooting to bypass upstream chip[DL] reconnect crash");
+                        Serial.flush();
+                        delay(50);
+                        ESP.restart();
+                    }
+                    break;
+                default:
+                    break;
+            }
+        });
 
-    // Start the FOC hw-timer AFTER Matter init so the commissioning storm doesn't compete with SVPWM interrupts.
-    foc_timer = timerBegin(1000000);
-    timerAttachInterrupt(foc_timer, &onFocTick);
-    timerAlarm(foc_timer, 1000000 / FOC_ISR_HZ, true, 0);
+        matter_light.begin(boot_commanded > LEDS_OFF_THRESH, cmdToMatterBrightness(boot_commanded), cctToMireds(cct_loaded));
+        matter_light.onChange(onMatterChange);
+        Matter.begin();
+        Serial.printf("free heap after Matter.begin(): %lu\n", (unsigned long)ESP.getFreeHeap());
+    } else {
+        Serial.println("SAFE MODE — previous boot panicked. Matter is OFF. Long-press 9 s to factory-reset, then power-cycle or wait for the next normal boot.");
+        // Two visible LED pulses so the user knows something is wrong even without watching serial.
+        pulseLEDs(2);
+    }
 
     // Register the main loop task with the FreeRTOS watchdog so a library hang triggers a clean panic-reboot.
     esp_task_wdt_config_t wdt_cfg = { .timeout_ms = WDT_TIMEOUT_MS, .idle_core_mask = 0, .trigger_panic = true };
     esp_task_wdt_reconfigure(&wdt_cfg);
     esp_task_wdt_add(NULL);
 
-    Serial.println("Ready.");
+    if (!safe_mode) {
+        // Already paired? Bring the motor + FOC ISR up immediately. Otherwise defer until commissioning settles (or the user short-clicks the button) so SPAKE2+ doesn't fight the 500 Hz ISR for CPU.
+        if (Matter.isDeviceCommissioned()) {
+            Serial.println("already commissioned — initializing motor now");
+            initMotorAndFoc();
+        } else {
+            Serial.println("uncommissioned — deferring motor/FOC init until pairing or short-click");
+        }
+    }
+
+    Serial.println("Setup complete.");
 }
 
 // Translate PCNT count deltas into either position or brightness adjustments depending on knob mode.
@@ -590,32 +661,40 @@ void rampTarget() {
     }
 }
 
-// Advance to the next speed preset and reflect the new velocity_limit.
+// Advance to the next speed preset and reflect the new velocity_limit. CylinderLamp pattern: visible LED-pulse feedback equal to the new preset index + 1, so the user knows which speed they're on without watching serial.
 void advanceSpeedPreset() {
     speed_idx = (speed_idx + 1) % VELOCITY_PRESET_N;
-    motor.velocity_limit = VELOCITY_PRESETS[speed_idx];
+    if (motor_init_done) {
+        motor.velocity_limit = VELOCITY_PRESETS[speed_idx];
+    }
     dirty_spd = true;
     Serial.printf("speed preset %u = %ld.%ld rad/s\n",
                   speed_idx,
-                  FX_HI(motor.velocity_limit, 10),
-                  FX_LO(motor.velocity_limit, 10));
+                  FX_HI(VELOCITY_PRESETS[speed_idx], 10),
+                  FX_LO(VELOCITY_PRESETS[speed_idx], 10));
+    pulseLEDs((uint8_t)(speed_idx + 1));
 }
 
-// Toggle knob mode between position and brightness.
+// Toggle knob mode between position and brightness; if the motor is still deferred (uncommissioned at boot), the first short-click brings it up so the user can bench-test without a controller.
 void onShortClick() {
+    if (!motor_init_done) {
+        Serial.println("short-click: bringing motor up before commissioning");
+        initMotorAndFoc();
+        return;
+    }
     knob_mode = (knob_mode == MODE_POSITION) ? MODE_BRIGHTNESS : MODE_POSITION;
     Serial.printf("mode: %s\n", knob_mode == MODE_POSITION ? "position" : "brightness");
 }
 
-// Wipe NVS, decommission Matter, and reboot.
+// Full factory reset: decommission Matter from the fabric (only if Matter is initialized — we skip Matter.begin() in safe_mode), wipe ALL NVS namespaces (blamp prefs + Matter state + WiFi creds + anything else), then reboot fresh. nvs_flash_erase() blanks the entire NVS partition so no library can have leftover state across the reboot.
 void factoryReset() {
-    Serial.println("factory reset: preferences cleared, decommissioning Matter, rebooting");
-    prefs.clear();
-    prefs.putFloat("pos", POS_MIN);
-    prefs.putUChar("spd", DEFAULT_SPEED_IDX);
-    prefs.putUChar("bri", 50);
-    prefs.putUChar("cct", 50);
-    Matter.decommission();
+    Serial.println("factory reset: decommissioning Matter + wiping NVS + rebooting");
+    Serial.flush();
+    if (!safe_mode) {
+        Matter.decommission();
+    }
+    nvs_flash_erase();
+    delay(200);
     ESP.restart();
 }
 
@@ -681,63 +760,77 @@ void loop() {
 
     esp_task_wdt_reset();
 
-    // Clear the consecutive-crash counter once we've survived long enough that the Matter/WiFi stack has finished its startup dance.
-    if (!crashes_cleared && millis() > CRASH_CLEAR_MS) {
-        boot_prefs.putUChar("crashes", 0);
-        crashes_cleared = true;
-    }
-
-    // Sync commanded to the physical shaft position whenever the motor is idle, so user input is always relative to reality.
-    if (!motor.enabled && !reset_pending) {
-        commanded  = motor.shaft_angle;
-        target     = commanded;
-        target_vel = 0.0f;
+    // One-shot post-commissioning trigger: bring up motor + FOC ISR once BLE_RELEASE_DELAY_MS has elapsed since the fabric appeared AND WiFi has actually connected (the second check guards against the half-commissioned state where creds are saved but the network step failed). Skipped in safe mode — Matter isn't running so isDeviceCommissioned() may misbehave.
+    if (!safe_mode && !motor_init_done) {
+        if (commissioned_at_ms == 0 && Matter.isDeviceCommissioned() && Matter.isWiFiConnected()) {
+            commissioned_at_ms = millis();
+            Serial.println("commissioning complete + wifi up — motor will init shortly");
+        }
+        if (commissioned_at_ms != 0 && millis() - commissioned_at_ms > BLE_RELEASE_DELAY_MS) {
+            initMotorAndFoc();
+        }
     }
 
     foc_cmd.run();
     pollButton();
-    readRotary();
-    rampTarget();
     resetDriverStep();
 
-    bool ramping     = fabs(commanded - target) > 1e-4f || fabs(target_vel) > 1e-4f;
-    bool pos_err_big = motor.enabled && fabs(target - motor.shaft_angle) > IDLE_POS_THRESH;
-    bool want_motion = ramping || pos_err_big;
-
-    if (want_motion) {
-        last_active_ms = millis();
-        if (!motor.enabled && !reset_pending) {
-            resetDriverBegin();
-            enable_time_ms = millis();
-            stall_start_ms = 0;
+    if (motor_init_done) {
+        // Snap commanded to physical position once on the enable→disable edge, so user input stays relative to reality without racing async Matter callbacks.
+        static bool was_enabled = false;
+        if (motor.enabled) {
+            was_enabled = true;
+        } else if (was_enabled && !reset_pending) {
+            commanded  = motor.shaft_angle;
+            target     = commanded;
+            target_vel = 0.0f;
+            was_enabled = false;
         }
-        bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
-        if (!in_warmup && fabs(motor.shaft_velocity) < STALL_VEL_THRESHOLD && pos_err_big) {
-            if (stall_start_ms == 0) stall_start_ms = millis();
-            else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
-                Serial.printf("stall at ang=%ld.%ld seeking G=%ld.%02ld — halted.\n",
-                              FX_HI(motor.shaft_angle, 10), FX_LO(motor.shaft_angle, 10),
-                              FX_HI(commanded, 100), FX_LO(commanded, 100));
-                haltMotor();
+
+        readRotary();
+        rampTarget();
+
+        bool ramping     = fabs(commanded - target) > 1e-4f || fabs(target_vel) > 1e-4f;
+        bool pos_err_big = motor.enabled && fabs(target - motor.shaft_angle) > IDLE_POS_THRESH;
+        bool want_motion = ramping || pos_err_big;
+
+        if (want_motion) {
+            last_active_ms = millis();
+            if (!motor.enabled && !reset_pending) {
+                resetDriverBegin();
+                enable_time_ms = millis();
+                stall_start_ms = 0;
+            }
+            bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
+            if (!in_warmup && fabs(motor.shaft_velocity) < STALL_VEL_THRESHOLD && pos_err_big) {
+                if (stall_start_ms == 0) stall_start_ms = millis();
+                else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
+                    Serial.printf("stall at ang=%ld.%ld seeking G=%ld.%02ld — halted.\n",
+                                  FX_HI(motor.shaft_angle, 10), FX_LO(motor.shaft_angle, 10),
+                                  FX_HI(commanded, 100), FX_LO(commanded, 100));
+                    haltMotor();
+                    stall_start_ms = 0;
+                }
+            } else {
                 stall_start_ms = 0;
             }
         } else {
             stall_start_ms = 0;
+            if (motor.enabled && millis() - last_active_ms > IDLE_DISABLE_MS) {
+                motor.disable();
+            }
         }
-    } else {
-        stall_start_ms = 0;
-        if (motor.enabled && millis() - last_active_ms > IDLE_DISABLE_MS) {
-            motor.disable();
-        }
+
+        motor.move(target);
+        updateLEDs();
     }
 
-    motor.move(target);
-
-    updateLEDs();
     maybePersist();
-    printMatterPairing();
-    syncMatterIfDirty();
-    handleBLERelease();
+    if (!safe_mode) {
+        printMatterPairing();
+        syncMatterIfDirty();
+        handleBLERelease();
+    }
 
     if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
         last_print_ms = millis();
@@ -751,7 +844,7 @@ void loop() {
                           FX_HI(motor.velocity_limit, 10),  FX_LO(motor.velocity_limit, 10),
                           speed_idx,
                           brightness,
-                          cct,
+                          (unsigned)cct.load(std::memory_order_relaxed),
                           knob_mode == MODE_POSITION ? 'P' : 'B',
                           (int)motor.enabled,
                           (unsigned long)max_loop_us);

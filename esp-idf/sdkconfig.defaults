@@ -39,6 +39,13 @@ CONFIG_MBEDTLS_HKDF_C=y
 # esp_simplefoc requires 1 kHz FreeRTOS tick
 CONFIG_FREERTOS_HZ=1000
 
+# Do NOT set GPTIMER_ISR_IRAM_SAFE=y here — g_motor.loopFOC() is NOT IRAM-resident,
+# so the ISR would crash on cache-disabled flash writes (Matter NVS persistence).
+# Brief pauses during flash writes are an acceptable trade-off.
+
+# Dynamic Frequency Scaling glitches SVPWM timing — keep the C6 at full clock.
+CONFIG_PM_ENABLE=n
+
 # Tight stacks for single-core C6
 CONFIG_CHIP_TASK_STACK_SIZE=6144
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=3072

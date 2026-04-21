@@ -57,7 +57,10 @@ static void on_knob(int detents) {
     if (!motor_is_ready()) return;
 
     if (s_knob_mode == KnobMode::Position) {
-        float cmd = motor_get_commanded() + (float)detents * RAD_PER_CLICK;
+        // Anchor detent to shaft_angle if motor is idle-disabled, otherwise the knob
+        // feels off (cmd has drifted from shaft during idle).
+        float anchor = motor_is_enabled() ? motor_get_commanded() : motor_get_shaft_angle();
+        float cmd = anchor + (float)detents * RAD_PER_CLICK;
         if (cmd < POS_MIN) cmd = POS_MIN;
         if (cmd > POS_MAX) cmd = POS_MAX;
         motor_set_commanded(cmd);
@@ -133,8 +136,19 @@ app_driver_handle_t app_driver_light_init(uint16_t light_endpoint_id) {
     return reinterpret_cast<app_driver_handle_t>(0xBEEF);
 }
 
-void app_driver_tick() {
+void app_driver_motor_tick() {
     motor_tick();
+}
+
+void app_driver_ui_tick() {
+#if CONFIG_APP_MATTER_ENABLED
+    // If the stall handler snapped commanded to shaft_angle, force a Matter push so Google
+    // Home reflects the actual position (bypassing the rate limit since this is a one-shot).
+    if (motor_consume_stall_event()) {
+        ESP_LOGI(TAG, "stall event — force-pushing corrected position to Matter");
+        app_driver_push_to_matter_force(s_endpoint_id);
+    }
+#endif
 }
 
 #if CONFIG_APP_MATTER_ENABLED
@@ -201,9 +215,7 @@ esp_err_t app_driver_apply_persisted(uint16_t endpoint_id) {
     return ESP_OK;
 }
 
-void app_driver_push_to_matter(uint16_t endpoint_id) {
-    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) return;
-
+static void push_to_matter_impl(uint16_t endpoint_id) {
     float cmd = motor_get_commanded();
     bool on = cmd > LEDS_OFF_THRESH;
     uint8_t bri = cmd_to_matter_brightness(cmd);
@@ -225,5 +237,20 @@ void app_driver_push_to_matter(uint16_t endpoint_id) {
                           ColorControl::Attributes::ColorTemperatureMireds::Id, &v_ct);
     }
     s_matter_echo.store(false);
+}
+
+void app_driver_push_to_matter(uint16_t endpoint_id) {
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) return;
+    // 1 s rate-limit so fast knob spins don't flood CHIP with attribute writes.
+    static int64_t s_last_push_us = 0;
+    int64_t now_us = esp_timer_get_time();
+    if (s_last_push_us != 0 && (now_us - s_last_push_us) < 1000000) return;
+    s_last_push_us = now_us;
+    push_to_matter_impl(endpoint_id);
+}
+
+void app_driver_push_to_matter_force(uint16_t endpoint_id) {
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) return;
+    push_to_matter_impl(endpoint_id);
 }
 #endif  // CONFIG_APP_MATTER_ENABLED
