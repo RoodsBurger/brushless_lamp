@@ -18,6 +18,10 @@ float motor_get_shaft_angle();
 // Velocity preset (cycles via double-click). Mirrors VELOCITY_PRESETS[].
 void motor_set_velocity_preset(uint8_t idx);
 
-// Per-iteration tick: advances the trapezoidal ramp, calls motor.move(),
-// runs stall detection, refreshes the LEDs from shaft_angle. Call from the main task.
+// While motor is idle-disabled, snap commanded to shaft_angle so subsequent user input
+// is relative to the physical shaft. MUST be called BEFORE input_poll each iteration —
+// otherwise the re-anchor clobbers knob deltas that arrived this tick.
+void motor_idle_anchor();
+
+// Per-iteration tick: ramp_target, motor.loopFOC(), motor.move(), stall detection, LED update.
 void motor_tick();

@@ -32,7 +32,7 @@ constexpr float PID_VEL_OUTPUT_RAMP = 1000.0f;
 constexpr float LPF_VEL_TF          = 0.02f;
 constexpr float PID_ANGLE_P         = 3.0f;
 constexpr float ACCEL_DEFAULT       = 10.0f;
-constexpr int   MOTION_DOWNSAMPLE   = 5;        // move() body runs every 6th task tick → PID at ~167 Hz. Matches Arduino M4. Crucially extends velocity-estimator dt from 1 ms to 6 ms, so MT6701 1024-CPR quantization noise drops 6×.
+constexpr int   MOTION_DOWNSAMPLE   = 0;        // SimpleFOC downsample semantics: `if (motion_cnt++ < N) return;` — 0 = run every call. Task is 1 kHz so PID runs at 1 kHz. LPF_velocity with Tf=0.02 handles the dt=1 ms encoder quantization noise.
 
 constexpr uint32_t IDLE_DISABLE_MS = 300;
 constexpr float    IDLE_POS_THRESH = 0.2f;

@@ -8,29 +8,31 @@
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <esp_system.h>
+#include <sdkconfig.h>
+
+#if CONFIG_APP_MATTER_ENABLED
 #include <esp_matter.h>
 #include <esp_matter_core.h>
 #include <esp_matter_attribute_utils.h>
 #include <app/server/Server.h>
+#endif
 
 #include <atomic>
 
 static const char *TAG = "app_drv";
 
+#if CONFIG_APP_MATTER_ENABLED
 using namespace esp_matter;
 using namespace chip::app::Clusters;
 
 static uint16_t s_endpoint_id = 0;
-
-// True for the brief window we're pushing state outbound to Matter, so the inbound
-// PRE_UPDATE callback can ignore the echo. Same pattern as Arduino sketch.
 static std::atomic<bool> s_matter_echo{false};
+#endif
 
-// Knob mode — CylinderLamp's single-click-toggles pattern. Starts in position mode
-// after motor init. Only meaningful once motor_is_ready().
 enum class KnobMode { Position, Brightness };
 static KnobMode s_knob_mode = KnobMode::Position;
 
+#if CONFIG_APP_MATTER_ENABLED
 static float matter_brightness_to_cmd(uint8_t level) {
     return ((float)level * POS_MAX) / 254.0f;
 }
@@ -49,26 +51,25 @@ static uint16_t cct_to_mireds(uint8_t cct) {
     if (cct > 100) cct = 100;
     return (uint16_t)(MATTER_CT_WARM - (long)cct * (MATTER_CT_WARM - MATTER_CT_COOL) / 100L);
 }
-
-// ---------------- Input event handlers ----------------
+#endif  // CONFIG_APP_MATTER_ENABLED
 
 static void on_knob(int detents) {
-    if (!motor_is_ready()) return;   // knob does nothing until motor is up
+    if (!motor_is_ready()) return;
 
     if (s_knob_mode == KnobMode::Position) {
         float cmd = motor_get_commanded() + (float)detents * RAD_PER_CLICK;
         if (cmd < POS_MIN) cmd = POS_MIN;
         if (cmd > POS_MAX) cmd = POS_MAX;
         motor_set_commanded(cmd);
-        ESP_LOGI(TAG, "knob %+d → cmd=%.2f → push", detents, (double)cmd);
+        ESP_LOGI(TAG, "knob %+d → cmd=%.2f", detents, (double)cmd);
+#if CONFIG_APP_MATTER_ENABLED
         app_driver_push_to_matter(s_endpoint_id);
-    } else { // KnobMode::Brightness
+#endif
+    } else {
         int bri = (int)leds_get_brightness() + detents;
         if (bri < 0)   bri = 0;
         if (bri > 100) bri = 100;
         leds_set_brightness((uint8_t)bri);
-        // Brightness isn't a Matter attribute in our product — it's purely local;
-        // Matter's LevelControl drives motor position, not LED intensity. So no push.
     }
 }
 
@@ -98,23 +99,25 @@ static void on_long_press_warn() {
 
 static void on_long_press_reset() {
     ESP_LOGI(TAG, "long-press reset (9 s) — factory reset");
+#if CONFIG_APP_MATTER_ENABLED
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() > 0) {
-        // Decommission via Matter — handles fabric state cleanly. Reboots internally.
         esp_matter::factory_reset();
-    } else {
-        // Already uncommissioned; just wipe blamp prefs and reboot.
-        nvs_flash_erase();
-        esp_restart();
+        return;
     }
+#endif
+    nvs_flash_erase();
+    esp_restart();
 }
 
-// ---------------- App lifecycle ----------------
-
 app_driver_handle_t app_driver_light_init(uint16_t light_endpoint_id) {
+#if CONFIG_APP_MATTER_ENABLED
     s_endpoint_id = light_endpoint_id;
+#else
+    (void)light_endpoint_id;
+#endif
     persistence_init();
     leds_init();
-    leds_set_brightness(50);   // initial defaults; persisted Matter values applied later
+    leds_set_brightness(50);
     leds_set_cct(50);
     motor_set_velocity_preset(persistence_get_speed_idx());
 
@@ -126,10 +129,15 @@ app_driver_handle_t app_driver_light_init(uint16_t light_endpoint_id) {
     cbs.on_long_press_reset  = on_long_press_reset;
     input_init(cbs);
 
-    ESP_LOGI(TAG, "app_driver init complete; motor stays cold until commissioning or short-click");
-    return reinterpret_cast<app_driver_handle_t>(0xBEEF);   // opaque, unused for now
+    ESP_LOGI(TAG, "app_driver init complete");
+    return reinterpret_cast<app_driver_handle_t>(0xBEEF);
 }
 
+void app_driver_tick() {
+    motor_tick();
+}
+
+#if CONFIG_APP_MATTER_ENABLED
 esp_err_t app_driver_attribute_update(app_driver_handle_t,
                                       uint16_t endpoint_id,
                                       uint32_t cluster_id,
@@ -143,7 +151,6 @@ esp_err_t app_driver_attribute_update(app_driver_handle_t,
         if (!on) {
             motor_set_commanded(POS_MIN);
         } else {
-            // On → restore motor to the last CurrentLevel. Without this, Off→On leaves the motor at zero.
             attribute_t *lvl_attr = attribute::get(endpoint_id, LevelControl::Id,
                                                    LevelControl::Attributes::CurrentLevel::Id);
             esp_matter_attr_val_t lvl;
@@ -153,6 +160,14 @@ esp_err_t app_driver_attribute_update(app_driver_handle_t,
         }
     } else if (cluster_id == LevelControl::Id &&
                attribute_id == LevelControl::Attributes::CurrentLevel::Id) {
+        // When Matter's LevelControl cluster transitions on OnOff, it auto-writes CurrentLevel.
+        // Ignore the Level write if OnOff is currently false so we don't clobber POS_MIN.
+        attribute_t *onoff_attr = attribute::get(endpoint_id, OnOff::Id,
+                                                 OnOff::Attributes::OnOff::Id);
+        esp_matter_attr_val_t onoff_val;
+        if (onoff_attr && attribute::get_val(onoff_attr, &onoff_val) == ESP_OK && !onoff_val.val.b) {
+            return ESP_OK;
+        }
         uint8_t level = val->val.u8;
         if (level < 1) level = 1;
         motor_set_commanded(matter_brightness_to_cmd(level));
@@ -175,7 +190,6 @@ esp_err_t app_driver_apply_persisted(uint16_t endpoint_id) {
     bool is_on = true;
     if (get(OnOff::Id, OnOff::Attributes::OnOff::Id, v)) is_on = v.val.b;
 
-    // OnOff=false must override CurrentLevel; otherwise the sequential writes race and the Level apply clobbers the off state.
     if (!is_on) {
         motor_set_commanded(POS_MIN);
     } else if (get(LevelControl::Id, LevelControl::Attributes::CurrentLevel::Id, v) && v.val.u8 >= 1) {
@@ -187,15 +201,8 @@ esp_err_t app_driver_apply_persisted(uint16_t endpoint_id) {
     return ESP_OK;
 }
 
-void app_driver_tick() {
-    motor_tick();
-}
-
 void app_driver_push_to_matter(uint16_t endpoint_id) {
-    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-        ESP_LOGW(TAG, "push skipped: uncommissioned");
-        return;
-    }
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) return;
 
     float cmd = motor_get_commanded();
     bool on = cmd > LEDS_OFF_THRESH;
@@ -204,22 +211,19 @@ void app_driver_push_to_matter(uint16_t endpoint_id) {
     uint16_t mireds = cct_to_mireds(leds_get_cct());
 
     s_matter_echo.store(true);
-    esp_err_t r_on = ESP_OK, r_lvl = ESP_OK, r_ct = ESP_OK;
     {
         esp_matter::lock::ScopedChipStackLock lock(portMAX_DELAY);
         esp_matter_attr_val_t v_on  = esp_matter_bool(on);
-        // CurrentLevel is nullable-uint8 in Matter; esp_matter_uint8() returns ESP_ERR_INVALID_ARG (258) at update time.
         esp_matter_attr_val_t v_lvl = esp_matter_nullable_uint8(bri);
         esp_matter_attr_val_t v_ct  = esp_matter_nullable_uint16(mireds);
-        r_on = attribute::update(endpoint_id, OnOff::Id, OnOff::Attributes::OnOff::Id, &v_on);
+        attribute::update(endpoint_id, OnOff::Id, OnOff::Attributes::OnOff::Id, &v_on);
         if (on) {
-            r_lvl = attribute::update(endpoint_id, LevelControl::Id,
-                                      LevelControl::Attributes::CurrentLevel::Id, &v_lvl);
+            attribute::update(endpoint_id, LevelControl::Id,
+                              LevelControl::Attributes::CurrentLevel::Id, &v_lvl);
         }
-        r_ct = attribute::update(endpoint_id, ColorControl::Id,
-                                 ColorControl::Attributes::ColorTemperatureMireds::Id, &v_ct);
+        attribute::update(endpoint_id, ColorControl::Id,
+                          ColorControl::Attributes::ColorTemperatureMireds::Id, &v_ct);
     }
     s_matter_echo.store(false);
-    ESP_LOGI(TAG, "push: on=%d lvl=%u mireds=%u (r_on=%d r_lvl=%d r_ct=%d)",
-             (int)on, bri, mireds, r_on, r_lvl, r_ct);
 }
+#endif  // CONFIG_APP_MATTER_ENABLED
