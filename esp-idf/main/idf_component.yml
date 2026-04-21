@@ -1,0 +1,7 @@
+dependencies:
+  idf: ">=5.4.1,<5.5"
+  espressif/esp_simplefoc: "^1.2.3"
+  # iot_button is transitively required by esp-matter's examples/common/app_reset which we
+  # include via EXTRA_COMPONENT_DIRS. We don't use app_reset directly (our own 9s-hold
+  # handler lives in input.cpp) but we need to satisfy the dependency.
+  espressif/button: "*"

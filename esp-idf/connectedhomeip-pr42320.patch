@@ -1,0 +1,242 @@
+From 23c34c757028347a36b894ce9e578f8df543f8c3 Mon Sep 17 00:00:00 2001
+From: BrushlessLamp <brushlesslamp@local>
+Date: Mon, 20 Apr 2026 23:48:21 -0700
+Subject: [PATCH] Cherry-pick PR#42320: fix C6 chip[DL] WiFi-reconnect crash
+
+Applies the ESP32 platform changes from project-chip/connectedhomeip#42320
+to fix the duplicate SetWiFiStationMode(Disabled) race that causes a
+Load access fault (MTVAL=0x000000a8) on ESP32-C6 after a failed
+esp_wifi_connect().
+
+Files: 4 (CHIPDevicePlatformConfig.h, ConnectivityManagerImpl_WiFi.cpp,
+ESP32Utils.cpp, NetworkCommissioningDriver.cpp)
+---
+ src/platform/ESP32/CHIPDevicePlatformConfig.h | 21 +++++++++
+ .../ESP32/ConnectivityManagerImpl_WiFi.cpp    | 10 ++---
+ src/platform/ESP32/ESP32Utils.cpp             | 13 +++++-
+ .../ESP32/NetworkCommissioningDriver.cpp      | 43 +++++++++++--------
+ 4 files changed, 63 insertions(+), 24 deletions(-)
+
+diff --git a/src/platform/ESP32/CHIPDevicePlatformConfig.h b/src/platform/ESP32/CHIPDevicePlatformConfig.h
+index 03103832..ae8acec4 100644
+--- a/src/platform/ESP32/CHIPDevicePlatformConfig.h
++++ b/src/platform/ESP32/CHIPDevicePlatformConfig.h
+@@ -106,8 +106,17 @@
+ #define CHIP_DEVICE_CONFIG_BLE_FAST_ADVERTISING_INTERVAL_MAX CONFIG_BLE_FAST_ADVERTISING_INTERVAL_MAX
+ #define CHIP_DEVICE_CONFIG_BLE_SLOW_ADVERTISING_INTERVAL_MIN CONFIG_BLE_SLOW_ADVERTISING_INTERVAL_MIN
+ #define CHIP_DEVICE_CONFIG_BLE_SLOW_ADVERTISING_INTERVAL_MAX CONFIG_BLE_SLOW_ADVERTISING_INTERVAL_MAX
++#ifdef CONFIG_CHIPOBLE_SINGLE_CONNECTION
+ #define CHIP_DEVICE_CONFIG_CHIPOBLE_SINGLE_CONNECTION CONFIG_CHIPOBLE_SINGLE_CONNECTION
++#else
++#define CHIP_DEVICE_CONFIG_CHIPOBLE_SINGLE_CONNECTION 0
++#endif
++
++#ifdef CONFIG_CHIPOBLE_ENABLE_ADVERTISING_AUTOSTART
+ #define CHIP_DEVICE_CONFIG_CHIPOBLE_ENABLE_ADVERTISING_AUTOSTART CONFIG_CHIPOBLE_ENABLE_ADVERTISING_AUTOSTART
++#else
++#define CHIP_DEVICE_CONFIG_CHIPOBLE_ENABLE_ADVERTISING_AUTOSTART 0
++#endif
+ 
+ #ifdef CONFIG_ENABLE_TEST_SETUP_PARAMS
+ #define CHIP_DEVICE_CONFIG_ENABLE_TEST_SETUP_PARAMS 1
+@@ -136,10 +145,22 @@
+ #define CHIP_DEVICE_CONFIG_CHIP_CONFIG_NAMESPACE_PARTITION CONFIG_CHIP_CONFIG_NAMESPACE_PARTITION_LABEL
+ #define CHIP_DEVICE_CONFIG_CHIP_COUNTERS_NAMESPACE_PARTITION CONFIG_CHIP_COUNTERS_NAMESPACE_PARTITION_LABEL
+ #define CHIP_DEVICE_CONFIG_CHIP_KVS_NAMESPACE_PARTITION CONFIG_CHIP_KVS_NAMESPACE_PARTITION_LABEL
++#ifdef CONFIG_ENABLE_ESP32_DEVICE_INSTANCE_INFO_PROVIDER
+ #define CHIP_DEVICE_CONFIG_ENABLE_DEVICE_INSTANCE_INFO_PROVIDER CONFIG_ENABLE_ESP32_DEVICE_INSTANCE_INFO_PROVIDER
++#else
++#define CHIP_DEVICE_CONFIG_ENABLE_DEVICE_INSTANCE_INFO_PROVIDER 0
++#endif
+ #define CHIP_DEVICE_CONFIG_DISCOVERY_TIMEOUT_SECS CONFIG_CHIP_DISCOVERY_TIMEOUT_SECS
++#ifdef CONFIG_ENABLE_ESP32_BLE_CONTROLLER
+ #define CHIP_DEVICE_CONFIG_ENABLE_BOTH_COMMISSIONER_AND_COMMISSIONEE CONFIG_ENABLE_ESP32_BLE_CONTROLLER
++#else
++#define CHIP_DEVICE_CONFIG_ENABLE_BOTH_COMMISSIONER_AND_COMMISSIONEE 0
++#endif
++#ifdef CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART
+ #define CHIP_DEVICE_CONFIG_ENABLE_PAIRING_AUTOSTART CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART
++#else
++#define CHIP_DEVICE_CONFIG_ENABLE_PAIRING_AUTOSTART 0
++#endif
+ 
+ #ifdef CONFIG_ENABLE_BLE_EXT_ANNOUNCEMENT
+ #define CHIP_DEVICE_CONFIG_EXT_ADVERTISING CONFIG_ENABLE_BLE_EXT_ANNOUNCEMENT
+diff --git a/src/platform/ESP32/ConnectivityManagerImpl_WiFi.cpp b/src/platform/ESP32/ConnectivityManagerImpl_WiFi.cpp
+index cef762e8..a2184a9d 100644
+--- a/src/platform/ESP32/ConnectivityManagerImpl_WiFi.cpp
++++ b/src/platform/ESP32/ConnectivityManagerImpl_WiFi.cpp
+@@ -82,7 +82,7 @@ CHIP_ERROR ConnectivityManagerImpl::_SetWiFiStationMode(WiFiStationMode val)
+         err = Internal::ESP32Utils::EnableStationMode();
+         SuccessOrExit(err);
+ 
+-        DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
++        TEMPORARY_RETURN_IGNORED DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
+     }
+ 
+     if (mWiFiStationMode != val)
+@@ -112,7 +112,7 @@ void ConnectivityManagerImpl::_ClearWiFiStationProvision(void)
+             ChipLogError(DeviceLayer, "ClearWiFiStationProvision failed: %" CHIP_ERROR_FORMAT, error.Format());
+             return;
+         }
+-        DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
++        TEMPORARY_RETURN_IGNORED DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
+     }
+ }
+ 
+@@ -408,7 +408,7 @@ void ConnectivityManagerImpl::OnWiFiPlatformEvent(const ChipDeviceEvent * event)
+                 break;
+             case WIFI_EVENT_STA_DISCONNECTED:
+                 ChipLogProgress(DeviceLayer, "WIFI_EVENT_STA_DISCONNECTED");
+-                NetworkCommissioning::ESPWiFiDriver::GetInstance().SetLastDisconnectReason(event);
++                TEMPORARY_RETURN_IGNORED NetworkCommissioning::ESPWiFiDriver::GetInstance().SetLastDisconnectReason(event);
+                 if (mWiFiStationState == kWiFiStationState_Connecting)
+                 {
+                     ChangeWiFiStationState(kWiFiStationState_Connecting_Failed);
+@@ -455,13 +455,13 @@ void ConnectivityManagerImpl::_OnWiFiScanDone()
+ {
+     // Schedule a call to DriveStationState method in case a station connect attempt was
+     // deferred because the scan was in progress.
+-    DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
++    TEMPORARY_RETURN_IGNORED DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
+ }
+ 
+ void ConnectivityManagerImpl::_OnWiFiStationProvisionChange()
+ {
+     // Schedule a call to the DriveStationState method to adjust the station state as needed.
+-    DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
++    TEMPORARY_RETURN_IGNORED DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
+ }
+ 
+ void ConnectivityManagerImpl::DriveStationState()
+diff --git a/src/platform/ESP32/ESP32Utils.cpp b/src/platform/ESP32/ESP32Utils.cpp
+index bf6fd631..70a20b98 100644
+--- a/src/platform/ESP32/ESP32Utils.cpp
++++ b/src/platform/ESP32/ESP32Utils.cpp
+@@ -248,9 +248,20 @@ CHIP_ERROR ESP32Utils::ClearWiFiStationProvision(void)
+ {
+     wifi_config_t stationConfig;
+ 
++    esp_err_t err = esp_wifi_disconnect();
++    if (err != ESP_OK)
++    {
++        ChipLogProgress(DeviceLayer, "esp_wifi_disconnect() failed: %s", esp_err_to_name(err));
++        // Does not return error here as we just call esp_wifi_disconnect() to ensure that the Wi-Fi is not connecting.
++    }
+     // Clear the ESP WiFi station configuration.
+     memset(&stationConfig, 0, sizeof(stationConfig));
+-    esp_wifi_set_config(WIFI_IF_STA, &stationConfig);
++    err = esp_wifi_set_config(WIFI_IF_STA, &stationConfig);
++    if (err != ESP_OK)
++    {
++        ChipLogError(DeviceLayer, "esp_wifi_set_config() failed: %s", esp_err_to_name(err));
++        return MapError(err);
++    }
+ 
+     return CHIP_NO_ERROR;
+ }
+diff --git a/src/platform/ESP32/NetworkCommissioningDriver.cpp b/src/platform/ESP32/NetworkCommissioningDriver.cpp
+index 113f426a..f12923f2 100644
+--- a/src/platform/ESP32/NetworkCommissioningDriver.cpp
++++ b/src/platform/ESP32/NetworkCommissioningDriver.cpp
+@@ -117,7 +117,7 @@ CHIP_ERROR ESPWiFiDriver::Init(NetworkStatusChangeCallback * networkStatusChange
+     // If the network configuration backup exists, it means that the device has been rebooted with
+     // the fail-safe armed. Since ESP-WiFi persists all wifi credentials changes, the backup must
+     // be restored on the boot. If there's no backup, the below function is a no-op.
+-    RevertConfiguration();
++    TEMPORARY_RETURN_IGNORED RevertConfiguration();
+ 
+     return CHIP_NO_ERROR;
+ }
+@@ -129,8 +129,8 @@ void ESPWiFiDriver::Shutdown()
+ 
+ CHIP_ERROR ESPWiFiDriver::CommitConfiguration()
+ {
+-    PersistedStorage::KeyValueStoreMgr().Delete(kWiFiSSIDKeyName);
+-    PersistedStorage::KeyValueStoreMgr().Delete(kWiFiCredentialsKeyName);
++    TEMPORARY_RETURN_IGNORED PersistedStorage::KeyValueStoreMgr().Delete(kWiFiSSIDKeyName);
++    TEMPORARY_RETURN_IGNORED PersistedStorage::KeyValueStoreMgr().Delete(kWiFiCredentialsKeyName);
+ 
+     return CHIP_NO_ERROR;
+ }
+@@ -170,8 +170,8 @@ CHIP_ERROR ESPWiFiDriver::RevertConfiguration()
+ exit:
+ 
+     // Remove the backup.
+-    PersistedStorage::KeyValueStoreMgr().Delete(kWiFiSSIDKeyName);
+-    PersistedStorage::KeyValueStoreMgr().Delete(kWiFiCredentialsKeyName);
++    TEMPORARY_RETURN_IGNORED PersistedStorage::KeyValueStoreMgr().Delete(kWiFiSSIDKeyName);
++    TEMPORARY_RETURN_IGNORED PersistedStorage::KeyValueStoreMgr().Delete(kWiFiCredentialsKeyName);
+ 
+     return error;
+ }
+@@ -224,22 +224,14 @@ Status ESPWiFiDriver::ReorderNetwork(ByteSpan networkId, uint8_t index, MutableC
+ 
+ CHIP_ERROR ESPWiFiDriver::ConnectWiFiNetwork(const char * ssid, uint8_t ssidLen, const char * key, uint8_t keyLen)
+ {
+-    // If device is already connected to WiFi, then disconnect the WiFi,
+-    // clear the WiFi configurations and add the newly provided WiFi configurations.
++    // Clear the WiFi configurations and add the newly provided WiFi configurations.
+     if (chip::DeviceLayer::Internal::ESP32Utils::IsStationProvisioned())
+     {
+-        ChipLogProgress(DeviceLayer, "Disconnecting WiFi station interface");
+-        esp_err_t err = esp_wifi_disconnect();
+-        if (err != ESP_OK)
+-        {
+-            ChipLogError(DeviceLayer, "esp_wifi_disconnect() failed: %s", esp_err_to_name(err));
+-            return chip::DeviceLayer::Internal::ESP32Utils::MapError(err);
+-        }
+         CHIP_ERROR error = chip::DeviceLayer::Internal::ESP32Utils::ClearWiFiStationProvision();
+         if (error != CHIP_NO_ERROR)
+         {
+             ChipLogError(DeviceLayer, "ClearWiFiStationProvision failed: %" CHIP_ERROR_FORMAT, error.Format());
+-            return chip::DeviceLayer::Internal::ESP32Utils::MapError(err);
++            return error;
+         }
+     }
+ 
+@@ -260,7 +252,6 @@ CHIP_ERROR ESPWiFiDriver::ConnectWiFiNetwork(const char * ssid, uint8_t ssidLen,
+         return chip::DeviceLayer::Internal::ESP32Utils::MapError(err);
+     }
+ 
+-    ReturnErrorOnFailure(ConnectivityMgr().SetWiFiStationMode(ConnectivityManager::kWiFiStationMode_Disabled));
+     return ConnectivityMgr().SetWiFiStationMode(ConnectivityManager::kWiFiStationMode_Enabled);
+ }
+ 
+@@ -290,7 +281,23 @@ void ESPWiFiDriver::OnConnectWiFiNetworkFailed()
+ {
+     if (mpConnectCallback)
+     {
+-        mpConnectCallback->OnResult(Status::kNetworkNotFound, CharSpan(), 0);
++        Status status = Status::kOtherConnectionFailure;
++        switch (mLastDisconnectedReason)
++        {
++        case WIFI_REASON_AUTH_FAIL:
++        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
++        case WIFI_REASON_HANDSHAKE_TIMEOUT:
++        case WIFI_REASON_MIC_FAILURE:
++        case WIFI_REASON_CONNECTION_FAIL:
++            status = Status::kAuthFailure;
++            break;
++        case WIFI_REASON_NO_AP_FOUND:
++            status = Status::kNetworkNotFound;
++            break;
++        default:
++            break;
++        }
++        mpConnectCallback->OnResult(status, CharSpan(), 0);
+         mpConnectCallback = nullptr;
+     }
+ }
+@@ -360,7 +367,7 @@ CHIP_ERROR ESPWiFiDriver::StartScanWiFiNetworks(ByteSpan ssid)
+     }
+     else
+     {
+-        err = esp_wifi_scan_start(NULL, false);
++        err = esp_wifi_scan_start(nullptr, false);
+     }
+     if (err != ESP_OK)
+     {
+-- 
+2.48.1
+
