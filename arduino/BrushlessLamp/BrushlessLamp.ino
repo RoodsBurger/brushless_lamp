@@ -3,7 +3,9 @@
 
 #include <SimpleFOC.h>
 #include <Preferences.h>
+#include <Matter.h>
 #include "driver/pulse_cnt.h"
+#include "esp_bt.h"
 
 constexpr uint8_t PIN_PWM_A = 18;    // D10 — DRV8313 IN1
 constexpr uint8_t PIN_PWM_B = 20;    // D9  — DRV8313 IN2
@@ -21,6 +23,7 @@ constexpr uint8_t PIN_LED_WW = 23;   // D5 — AO3400A gate for warm-white chann
 constexpr uint8_t PIN_LED_CW = 16;   // D6 — AO3400A gate for cool-white channel
 
 constexpr uint32_t PWM_FREQ_HZ     = 25000;
+constexpr uint32_t FOC_ISR_HZ      = 2000;     // hw-timer rate for motor.loopFOC() — SVPWM keeps locked even while loop() yields to Matter/Thread
 constexpr uint32_t LED_PWM_FREQ_HZ  = 25000;
 constexpr uint8_t  LED_PWM_RES_BIT  = 10;
 constexpr uint16_t LED_PWM_MAX      = (1u << LED_PWM_RES_BIT) - 1;
@@ -70,16 +73,31 @@ constexpr uint8_t DEFAULT_SPEED_IDX  = 1;
 
 constexpr uint32_t PERSIST_DEBOUNCE_MS = 2000;    // wait this long after the last change before writing NVS
 
+constexpr uint32_t BLE_RELEASE_DELAY_MS = 3000;   // free the BLE controller N ms after commissioning completes
+constexpr uint16_t MATTER_CT_WARM       = 500;    // mireds — Matter's "warm" end of the range
+constexpr uint16_t MATTER_CT_COOL       = 100;    // mireds — Matter's "cool" end
+
 BLDCMotor       motor   = BLDCMotor(POLE_PAIRS);
 BLDCDriver3PWM  driver  = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
 Encoder         encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
-Commander       command = Commander(Serial);
+Commander       foc_cmd = Commander(Serial);
 Preferences     prefs;
 
 pcnt_unit_handle_t pcnt_unit = nullptr;
+hw_timer_t*        foc_timer = nullptr;
+
+MatterColorTemperatureLight matter_light;
+volatile bool matter_echo = false;                // set while we push local state to Matter — prevents onMatterChange feedback
+bool          matter_qr_printed = false;
+bool          ble_release_pending = false;
+bool          ble_released = false;
+uint32_t      ble_release_start_ms = 0;
 
 void IRAM_ATTR doA() { encoder.handleA(); }
 void IRAM_ATTR doB() { encoder.handleB(); }
+
+// Runs at FOC_ISR_HZ — keeps SVPWM locked to the rotor regardless of what the scheduler is doing.
+void IRAM_ATTR onFocTick() { motor.loopFOC(); }
 
 float   commanded      = 0.0f;             // user-commanded position, rad (set by knob / G)
 float   target         = 0.0f;             // trapezoidal-profile position fed to motor.move(), rad
@@ -217,20 +235,20 @@ void maybePersist() {
     if (dirty_spd)            { prefs.putUChar("spd", speed_idx);   dirty_spd = false; }
 }
 
-void doCurrent (char* arg) { command.scalar(&motor.current_limit, arg); }
-void doP       (char* arg) { command.scalar(&motor.PID_velocity.P, arg); }
-void doI       (char* arg) { command.scalar(&motor.PID_velocity.I, arg); }
-void doTf      (char* arg) { command.scalar(&motor.LPF_velocity.Tf, arg); }
-void doR       (char* arg) { command.scalar(&motor.phase_resistance, arg); }
-void doK       (char* arg) { command.scalar(&motor.KV_rating, arg); }
-void doM       (char* arg) { float v; command.scalar(&v, arg); motor.motion_downsample = (unsigned int)v; }
-void doAccel   (char* arg) { command.scalar(&accel, arg); if (accel < 0.1f) accel = 0.1f; }
+void doCurrent (char* arg) { foc_cmd.scalar(&motor.current_limit, arg); }
+void doP       (char* arg) { foc_cmd.scalar(&motor.PID_velocity.P, arg); }
+void doI       (char* arg) { foc_cmd.scalar(&motor.PID_velocity.I, arg); }
+void doTf      (char* arg) { foc_cmd.scalar(&motor.LPF_velocity.Tf, arg); }
+void doR       (char* arg) { foc_cmd.scalar(&motor.phase_resistance, arg); }
+void doK       (char* arg) { foc_cmd.scalar(&motor.KV_rating, arg); }
+void doM       (char* arg) { float v; foc_cmd.scalar(&v, arg); motor.motion_downsample = (unsigned int)v; }
+void doAccel   (char* arg) { foc_cmd.scalar(&accel, arg); if (accel < 0.1f) accel = 0.1f; }
 void doReset   (char* arg) { (void)arg; resetDriverBegin(); Serial.println("driver reset"); }
-void doVelLim  (char* arg) { command.scalar(&motor.velocity_limit, arg); }
+void doVelLim  (char* arg) { foc_cmd.scalar(&motor.velocity_limit, arg); }
 
 // Set the commanded position; rampTarget drives `target` toward it trapezoidally.
 void doGoto(char* arg) {
-    float v; command.scalar(&v, arg);
+    float v; foc_cmd.scalar(&v, arg);
     float clamped = constrain(v, POS_MIN, POS_MAX);
     if (clamped != commanded) {
         commanded = clamped;
@@ -240,7 +258,7 @@ void doGoto(char* arg) {
 
 // Set LED brightness 0..100; scales both channels via gamma LUT.
 void doBrightness(char* arg) {
-    float v; command.scalar(&v, arg);
+    float v; foc_cmd.scalar(&v, arg);
     int clamped = constrain((int)v, 0, 100);
     if (clamped != (int)brightness) {
         brightness = (uint8_t)clamped;
@@ -251,13 +269,102 @@ void doBrightness(char* arg) {
 
 // Set CCT mix 0..100; 0 = all warm white, 100 = all cool white.
 void doCct(char* arg) {
-    float v; command.scalar(&v, arg);
+    float v; foc_cmd.scalar(&v, arg);
     int clamped = constrain((int)v, 0, 100);
     if (clamped != (int)cct) {
         cct = (uint8_t)clamped;
         dirty_cct = true;
         last_change_ms = millis();
     }
+}
+
+// Map a Matter CurrentLevel 1..254 into a commanded motor position in radians.
+float matterBrightnessToCmd(uint8_t level) {
+    return ((float)level * POS_MAX) / 254.0f;
+}
+
+// Map the current commanded position to a Matter CurrentLevel 0..254.
+uint8_t cmdToMatterBrightness(float cmd) {
+    long v = (long)(cmd * 254.0f / POS_MAX + 0.5f);
+    if (v < 0)   v = 0;
+    if (v > 254) v = 254;
+    return (uint8_t)v;
+}
+
+// Map Matter ColorTemperatureMireds (100..500) to our cct (0..100, 0=WW,100=CW).
+uint8_t miredsToCct(uint16_t mireds) {
+    long m = constrain((long)mireds, (long)MATTER_CT_COOL, (long)MATTER_CT_WARM);
+    return (uint8_t)((MATTER_CT_WARM - m) * 100L / (MATTER_CT_WARM - MATTER_CT_COOL));
+}
+
+// Inverse of miredsToCct.
+uint16_t cctToMireds(uint8_t cct_val) {
+    long c = constrain((long)cct_val, 0L, 100L);
+    return (uint16_t)(MATTER_CT_WARM - c * (MATTER_CT_WARM - MATTER_CT_COOL) / 100L);
+}
+
+// Matter pushed a new state — translate into local commanded/cct.
+bool onMatterChange(bool state, uint8_t level, uint16_t mireds) {
+    if (matter_echo) return true;
+    float new_cmd = state ? constrain(matterBrightnessToCmd(level), POS_MIN, POS_MAX) : POS_MIN;
+    if (fabs(new_cmd - commanded) > 1e-3f) {
+        commanded = new_cmd;
+        markPosDirty();
+    }
+    uint8_t new_cct = miredsToCct(mireds);
+    if (new_cct != cct) {
+        cct = new_cct;
+        dirty_cct = true;
+        last_change_ms = millis();
+    }
+    return true;
+}
+
+// Push local state back to Matter when it drifts away from the last-sent snapshot.
+void syncMatterIfDirty() {
+    if (!Matter.isDeviceCommissioned()) return;
+    static float   last_sent_cmd = -1e9f;
+    static uint8_t last_sent_cct = 255;
+    bool on_state = commanded > LEDS_OFF_THRESH;
+    uint8_t bri = cmdToMatterBrightness(commanded);
+    if (on_state && bri == 0) bri = 1;
+    uint16_t mireds = cctToMireds(cct);
+    if (fabs(commanded - last_sent_cmd) < 0.5f && cct == last_sent_cct) return;
+    matter_echo = true;
+    matter_light.setOnOff(on_state);
+    if (on_state) matter_light.setBrightness(bri);
+    matter_light.setColorTemperature(mireds);
+    matter_light.updateAccessory();
+    matter_echo = false;
+    last_sent_cmd = commanded;
+    last_sent_cct = cct;
+}
+
+// Print the QR-code URL and manual pairing code exactly once if the node isn't commissioned yet.
+void printMatterPairing() {
+    if (matter_qr_printed || Matter.isDeviceCommissioned()) return;
+    Serial.println("=== Matter: uncommissioned ===");
+    Serial.printf("QR code: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
+    Serial.printf("Manual pairing code: %s\n", Matter.getManualPairingCode().c_str());
+    matter_qr_printed = true;
+}
+
+// Once commissioning finishes, drop the BLE controller after a short delay to reclaim ~60 KB of heap.
+void handleBLERelease() {
+    if (ble_released) return;
+    if (!Matter.isDeviceCommissioned()) return;
+    if (!ble_release_pending) {
+        ble_release_pending = true;
+        ble_release_start_ms = millis();
+        Serial.println("Matter commissioned — releasing BLE in 3 s");
+        return;
+    }
+    if (millis() - ble_release_start_ms < BLE_RELEASE_DELAY_MS) return;
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+    esp_bt_mem_release(ESP_BT_MODE_BLE);
+    ble_released = true;
+    Serial.printf("Matter commissioned — BLE released, free heap: %lu\n", (unsigned long)ESP.getFreeHeap());
 }
 
 void setup() {
@@ -355,19 +462,29 @@ void setup() {
     pcnt_unit_start(pcnt_unit);
     pcnt_prev = 0;
 
-    command.add('G', doGoto,    "goto position rad");
-    command.add('T', doVelLim,  "velocity_limit rad/s (overrides preset)");
-    command.add('C', doCurrent, "current limit");
-    command.add('P', doP,       "PID_velocity P");
-    command.add('I', doI,       "PID_velocity I");
-    command.add('F', doTf,      "LPF_velocity Tf");
-    command.add('R', doR,       "phase R");
-    command.add('K', doK,       "KV rating");
-    command.add('M', doM,       "motion downsample");
-    command.add('A', doAccel,   "trapezoidal accel rad/s²");
-    command.add('B', doBrightness, "LED brightness 0..100");
-    command.add('W', doCct,        "CCT mix 0..100 (0=WW,100=CW)");
-    command.add('X', doReset,   "reset driver (clear latched fault)");
+    foc_cmd.add('G', doGoto,    "goto position rad");
+    foc_cmd.add('T', doVelLim,  "velocity_limit rad/s (overrides preset)");
+    foc_cmd.add('C', doCurrent, "current limit");
+    foc_cmd.add('P', doP,       "PID_velocity P");
+    foc_cmd.add('I', doI,       "PID_velocity I");
+    foc_cmd.add('F', doTf,      "LPF_velocity Tf");
+    foc_cmd.add('R', doR,       "phase R");
+    foc_cmd.add('K', doK,       "KV rating");
+    foc_cmd.add('M', doM,       "motion downsample");
+    foc_cmd.add('A', doAccel,   "trapezoidal accel rad/s²");
+    foc_cmd.add('B', doBrightness, "LED brightness 0..100");
+    foc_cmd.add('W', doCct,        "CCT mix 0..100 (0=WW,100=CW)");
+    foc_cmd.add('X', doReset,   "reset driver (clear latched fault)");
+
+    foc_timer = timerBegin(1000000);                          // 1 MHz counter
+    timerAttachInterrupt(foc_timer, &onFocTick);
+    timerAlarm(foc_timer, 1000000 / FOC_ISR_HZ, true, 0);     // alarm every 500 us = 2 kHz ISR rate
+
+    matter_light.begin(commanded > LEDS_OFF_THRESH, cmdToMatterBrightness(commanded), cctToMireds(cct));
+    matter_light.onChange(onMatterChange);
+    Matter.begin();
+    Serial.printf("free heap after Matter.begin(): %lu\n", (unsigned long)ESP.getFreeHeap());
+
     Serial.println("Ready.");
 }
 
@@ -441,14 +558,15 @@ void onShortClick() {
     Serial.printf("mode: %s\n", knob_mode == MODE_POSITION ? "position" : "brightness");
 }
 
-// Wipe NVS, write defaults, and reboot.
+// Wipe NVS, decommission Matter, and reboot.
 void factoryReset() {
-    Serial.println("factory reset: preferences cleared, rebooting");
+    Serial.println("factory reset: preferences cleared, decommissioning Matter, rebooting");
     prefs.clear();
     prefs.putFloat("pos", POS_MIN);
     prefs.putUChar("spd", DEFAULT_SPEED_IDX);
     prefs.putUChar("bri", 50);
     prefs.putUChar("cct", 50);
+    Matter.decommission();
     ESP.restart();
 }
 
@@ -496,7 +614,7 @@ void pollButton() {
     }
 }
 
-// Never returns — see README for loopTask preemption context.
+// Returns each iteration so FreeRTOS can service Matter / Thread / BLE tasks; motor commutation is handled by onFocTick() from the hw-timer ISR.
 void loop() {
     static uint32_t prev_loop_us = 0;
     static uint32_t max_loop_us  = 0;
@@ -505,85 +623,82 @@ void loop() {
     static uint32_t enable_time_ms = 0;
     static uint32_t last_print_ms  = 0;
 
-    while (true) {
-        uint32_t now_us = micros();
-        if (prev_loop_us != 0) {
-            uint32_t dt = now_us - prev_loop_us;
-            if (dt > max_loop_us) max_loop_us = dt;
-        }
-        prev_loop_us = now_us;
+    uint32_t now_us = micros();
+    if (prev_loop_us != 0) {
+        uint32_t dt = now_us - prev_loop_us;
+        if (dt > max_loop_us) max_loop_us = dt;
+    }
+    prev_loop_us = now_us;
 
-        // Sync commanded to the physical shaft position whenever the motor is idle, so user input is always relative to reality.
+    // Sync commanded to the physical shaft position whenever the motor is idle, so user input is always relative to reality.
+    if (!motor.enabled && !reset_pending) {
+        commanded  = motor.shaft_angle;
+        target     = commanded;
+        target_vel = 0.0f;
+    }
+
+    foc_cmd.run();
+    pollButton();
+    readRotary();
+    rampTarget();
+    resetDriverStep();
+
+    bool ramping     = fabs(commanded - target) > 1e-4f || fabs(target_vel) > 1e-4f;
+    bool pos_err_big = motor.enabled && fabs(target - motor.shaft_angle) > IDLE_POS_THRESH;
+    bool want_motion = ramping || pos_err_big;
+
+    if (want_motion) {
+        last_active_ms = millis();
         if (!motor.enabled && !reset_pending) {
-            commanded  = motor.shaft_angle;
-            target     = commanded;
-            target_vel = 0.0f;
+            resetDriverBegin();
+            enable_time_ms = millis();
+            stall_start_ms = 0;
         }
-
-        command.run();
-        pollButton();
-        readRotary();
-        rampTarget();
-        resetDriverStep();
-
-        bool ramping     = fabs(commanded - target) > 1e-4f || fabs(target_vel) > 1e-4f;
-        bool pos_err_big = motor.enabled && fabs(target - motor.shaft_angle) > IDLE_POS_THRESH;
-        bool want_motion = ramping || pos_err_big;
-
-        if (want_motion) {
-            last_active_ms = millis();
-            if (!motor.enabled && !reset_pending) {
-                // Begin nSLEEP reset; completes asynchronously via resetDriverStep().
-                resetDriverBegin();
-                enable_time_ms = millis();
-                stall_start_ms = 0;
-            }
-            // Skip stall detection during the accelerate-from-stop warmup.
-            bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
-            if (!in_warmup && fabs(motor.shaft_velocity) < STALL_VEL_THRESHOLD && pos_err_big) {
-                if (stall_start_ms == 0) stall_start_ms = millis();
-                else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
-                    Serial.printf("stall at ang=%ld.%ld seeking G=%ld.%02ld — halted.\n",
-                                  FX_HI(motor.shaft_angle, 10), FX_LO(motor.shaft_angle, 10),
-                                  FX_HI(commanded, 100), FX_LO(commanded, 100));
-                    haltMotor();
-                    stall_start_ms = 0;
-                }
-            } else {
+        bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
+        if (!in_warmup && fabs(motor.shaft_velocity) < STALL_VEL_THRESHOLD && pos_err_big) {
+            if (stall_start_ms == 0) stall_start_ms = millis();
+            else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
+                Serial.printf("stall at ang=%ld.%ld seeking G=%ld.%02ld — halted.\n",
+                              FX_HI(motor.shaft_angle, 10), FX_LO(motor.shaft_angle, 10),
+                              FX_HI(commanded, 100), FX_LO(commanded, 100));
+                haltMotor();
                 stall_start_ms = 0;
             }
         } else {
             stall_start_ms = 0;
-            if (motor.enabled && millis() - last_active_ms > IDLE_DISABLE_MS) {
-                motor.disable();
-            }
         }
-
-        motor.loopFOC();
-        motor.move(target);
-
-        updateLEDs();
-        maybePersist();
-
-        if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
-            last_print_ms = millis();
-            // Skip the write if the TX ring can't take the whole line without blocking.
-            if (Serial.availableForWrite() >= 160) {
-                Serial.printf("cmd:%ld.%02ld tgt:%ld.%02ld ang:%ld.%ld vel:%ld.%02ld tvel:%ld.%02ld vlim:%ld.%ld spd:%u bri:%u cct:%u mode:%c en:%d maxLp:%luus\n",
-                              FX_HI(commanded, 100),            FX_LO(commanded, 100),
-                              FX_HI(target, 100),               FX_LO(target, 100),
-                              FX_HI(motor.shaft_angle, 10),     FX_LO(motor.shaft_angle, 10),
-                              FX_HI(motor.shaft_velocity, 100), FX_LO(motor.shaft_velocity, 100),
-                              FX_HI(target_vel, 100),           FX_LO(target_vel, 100),
-                              FX_HI(motor.velocity_limit, 10),  FX_LO(motor.velocity_limit, 10),
-                              speed_idx,
-                              brightness,
-                              cct,
-                              knob_mode == MODE_POSITION ? 'P' : 'B',
-                              (int)motor.enabled,
-                              (unsigned long)max_loop_us);
-            }
-            max_loop_us = 0;
+    } else {
+        stall_start_ms = 0;
+        if (motor.enabled && millis() - last_active_ms > IDLE_DISABLE_MS) {
+            motor.disable();
         }
+    }
+
+    motor.move(target);
+
+    updateLEDs();
+    maybePersist();
+    printMatterPairing();
+    syncMatterIfDirty();
+    handleBLERelease();
+
+    if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
+        last_print_ms = millis();
+        if (Serial.availableForWrite() >= 160) {
+            Serial.printf("cmd:%ld.%02ld tgt:%ld.%02ld ang:%ld.%ld vel:%ld.%02ld tvel:%ld.%02ld vlim:%ld.%ld spd:%u bri:%u cct:%u mode:%c en:%d maxLp:%luus\n",
+                          FX_HI(commanded, 100),            FX_LO(commanded, 100),
+                          FX_HI(target, 100),               FX_LO(target, 100),
+                          FX_HI(motor.shaft_angle, 10),     FX_LO(motor.shaft_angle, 10),
+                          FX_HI(motor.shaft_velocity, 100), FX_LO(motor.shaft_velocity, 100),
+                          FX_HI(target_vel, 100),           FX_LO(target_vel, 100),
+                          FX_HI(motor.velocity_limit, 10),  FX_LO(motor.velocity_limit, 10),
+                          speed_idx,
+                          brightness,
+                          cct,
+                          knob_mode == MODE_POSITION ? 'P' : 'B',
+                          (int)motor.enabled,
+                          (unsigned long)max_loop_us);
+        }
+        max_loop_us = 0;
     }
 }

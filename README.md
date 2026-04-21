@@ -2,7 +2,7 @@
 
 Kinetic smart lamp — BLDC variant of [CylinderLamp](../CylinderLamp). Same concept (lit core raised/lowered by a motor to control brightness), but the stepper + TMC2209 is replaced by a gimbal BLDC motor driven through a SimpleFOC Mini, with a Seeed XIAO ESP32-C6 running the FOC commutation itself.
 
-## Current milestones — M1 + M2 + M3a + M3b
+## Current milestones — M1 + M2 + M3a + M3b + M4
 
 Closed-loop **angular-position control** on the motor via an MT6701 ABZ encoder. A rotary encoder knob with push-button drives the user interface:
 - **Position mode (default)**: knob turns the motor — the lit core rises/falls mechanically. Commanded position at 0 electrically turns the LEDs **off**.
@@ -135,6 +135,30 @@ The knob has two modes; single click toggles between them. The **measured shaft 
 
 `commanded`, `speed_idx`, `brightness`, and `cct` all persist via ESP32 `Preferences`. Knob mode itself is not persisted — every boot starts in position mode. On boot the firmware applies a `sensor_offset` so `shaft_angle` reads as the persisted `commanded`, the motor stays put, and LEDs illuminate at the saved brightness/CCT if `commanded > 0.1 rad`.
 
+### Matter (M4)
+
+The lamp is a **Matter ColorTemperatureLight** — one endpoint exposing OnOff, LevelControl, and ColorControl clusters. Controllers (Google Home, Apple Home, Alexa, Home Assistant) see it as a smart light with on/off, a brightness slider, and a color-temperature slider.
+
+**Mapping to the physical lamp:**
+- **On/Off** → `commanded` snaps to `POS_MIN` when off; restores the last Matter-level position when on.
+- **Brightness (1..254)** → motor **position** (`commanded = brightness × POS_MAX / 254`). The LED gate then fades the lamp in as the motor passes through its 0.5 → 3 rad zone, same as the knob-driven path.
+- **Color temperature (100–500 mireds)** → LED CCT mix (100 mireds = cool = `cct=100` = all CW; 500 mireds = warm = `cct=0` = all WW).
+
+**LED brightness is deliberately knob-only** and not exposed to Matter. The Matter brightness slider is the motor slider; the lamp's own dimmer stays local on the knob.
+
+**Commissioning:**
+- On first boot the serial log prints `=== Matter: uncommissioned ===` followed by a QR-code URL and an 11-digit manual pairing code. Open Google Home → Add device → Matter-enabled device → scan the QR or type the manual code.
+- BLE is used once for commissioning, then automatically released ~3 s after commissioning completes (`BLE released, free heap: XXXXX` in the log).
+- The long-hold factory reset (9 s button press) both wipes `Preferences` and calls `Matter.decommission()` — the device re-appears as uncommissioned on next boot.
+
+**Transport:** Matter-over-WiFi (which the arduino-esp32 Matter library picks for the XIAO C6 build by default). The C6 has the 802.15.4 radio for Matter-over-Thread too, but the arduino-esp32 Matter stack currently ships WiFi-configured for C6 — migrating to Thread is a follow-up (requires a custom build config; defer until needed).
+
+**Known limitations:**
+- **All flashed boards share the same QR code** — the arduino-esp32 Matter library doesn't expose a runtime API for per-device discriminator/passcode, so without patching the library or moving to full ESP-IDF every board presents identical commissioning credentials. Fine for a single-lamp household; would need addressing before any fleet deployment.
+- Devices appear as "Unverified" in the Home app because we don't carry a CSA-signed DAC. Harmless for personal use.
+
+**FOC runs on a hardware timer ISR now** (2 kHz `hw_timer_t`). `motor.loopFOC()` no longer runs in `loop()` — the timer keeps SVPWM locked to the rotor regardless of Matter / Thread / BLE scheduler activity. `motor.move()` still runs in `loop()` and is tolerant of occasional ~4 ms scheduler preemption spikes (visible as `maxLp` jumps in the status line). This refactor is what lets the knob-driven `while (true)` go away so Matter's FreeRTOS tasks get scheduler time.
+
 ### Serial commands
 
 - `G<float>` — goto absolute position in rad (clamped to `[POS_MIN, POS_MAX]`).
@@ -170,8 +194,8 @@ Periodic status line (1 Hz) reports `cmd` (user-commanded position), `tgt` (trap
 - **M2 ✓** MT6701 encoder, closed-loop velocity, accel-limited velocity ramp, DRV8313 fault/stall recovery.
 - **M3a ✓** Rotary encoder + push button user input. Position mode, PCNT-decoded knob, click/double-click/long-hold button state machine, speed-preset cycling, `Preferences` persistence of target + speed.
 - **M3b ✓** CCT LED strip — WW/CW MOSFETs on D5/D6 driven via LEDC, log-curve brightness, position-gated lamp on/off, single-click brightness-mode toggle, long-hold warning fade-pulses on the lamp LEDs. CCT mix is set via serial (`W`) now and via Matter later.
-- **M4:** Matter integration (port from CylinderLamp). The C6 supports **802.15.4**, so Matter-over-Thread is on the table — likely more robust than Matter-over-WiFi given the motor switching noise and tighter latency budget.
-  - **Refactor required first:** the current sketch spins forever inside `loop()` (`while (true) { ... }`) to dodge the arduino-esp32 single-core scheduler quirk that preempts `loop()` for ~4 ms every ~2 s — see "Known issues" below. That works fine with no networking, but Matter/WiFi/Thread/BLE all run on FreeRTOS tasks at priorities 5–23 and need the scheduler to actually schedule them. Before pulling Matter in, move `motor.loopFOC()` onto a hardware timer (`hw_timer_t` + `IRAM_ATTR` ISR at 5–10 kHz) so commutation is deterministic regardless of what else runs, and let `loop()` return normally.
+- **M4 ✓** Matter integration over WiFi. ColorTemperatureLight endpoint — Matter brightness slider drives motor position, Matter color temperature drives LED CCT mix. LED brightness stays knob-only. FOC commutation moved to a 2 kHz hw-timer ISR so the FreeRTOS scheduler is free to run Matter/WiFi/BLE tasks without starving the motor.
+- **M5 (deferred):** per-device unique QR codes (needs library patch or ESP-IDF migration), Matter-over-Thread transport, OTA updates over Matter.
 
 ## Known issues / references
 
