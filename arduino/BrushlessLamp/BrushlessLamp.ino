@@ -65,8 +65,8 @@ constexpr uint32_t STALL_TIMEOUT_MS    = 500;
 constexpr uint32_t STALL_WARMUP_MS     = 800;
 
 constexpr float POS_MIN       = 0.0f;          // rad — soft lower limit
-constexpr float POS_MAX       = 1000.0f;       // rad — soft upper limit (testing placeholder; tighten for final mechanics)
-constexpr float RAD_PER_CLICK = 1.0f;          // rad per encoder detent
+constexpr float POS_MAX       = 30.0f;         // rad — soft upper limit; keeps Matter brightness → motor travel under ~1.5 s at max speed preset so the app feels responsive
+constexpr float RAD_PER_CLICK = 0.3f;          // rad per encoder detent; ~100 detents spans full travel, matching knob-to-range feel of CylinderLamp
 
 constexpr uint32_t BTN_DEBOUNCE_MS   = 30;
 constexpr uint32_t BTN_DBL_GAP_MS    = 400;
@@ -75,7 +75,7 @@ constexpr uint32_t BTN_LONG_RESET_MS = 9000;
 
 constexpr float   VELOCITY_PRESETS[] = {10.0f, 15.0f, 20.0f, 25.0f};
 constexpr uint8_t VELOCITY_PRESET_N  = sizeof(VELOCITY_PRESETS) / sizeof(VELOCITY_PRESETS[0]);
-constexpr uint8_t DEFAULT_SPEED_IDX  = 1;
+constexpr uint8_t DEFAULT_SPEED_IDX  = 3;    // 25 rad/s — gives Matter sliders ~1.2 s end-to-end on the new POS_MAX
 
 constexpr uint32_t PERSIST_DEBOUNCE_MS = 2000;    // wait this long after the last change before writing NVS
 
