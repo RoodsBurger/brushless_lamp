@@ -6,6 +6,9 @@
 #include <Matter.h>
 #include "driver/pulse_cnt.h"
 #include "esp_bt.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
+#include "nvs_flash.h"
 
 constexpr uint8_t PIN_PWM_A = 18;    // D10 — DRV8313 IN1
 constexpr uint8_t PIN_PWM_B = 20;    // D9  — DRV8313 IN2
@@ -23,7 +26,10 @@ constexpr uint8_t PIN_LED_WW = 23;   // D5 — AO3400A gate for warm-white chann
 constexpr uint8_t PIN_LED_CW = 16;   // D6 — AO3400A gate for cool-white channel
 
 constexpr uint32_t PWM_FREQ_HZ     = 25000;
-constexpr uint32_t FOC_ISR_HZ      = 2000;     // hw-timer rate for motor.loopFOC() — SVPWM keeps locked even while loop() yields to Matter/Thread
+constexpr uint32_t FOC_ISR_HZ      = 1000;     // hw-timer rate for motor.loopFOC(); 1 kHz gives enough SVPWM updates while leaving plenty of CPU for the Matter/WiFi init storm
+constexpr uint32_t WDT_TIMEOUT_MS  = 10000;    // main-loop watchdog — reboots the chip if loop() hangs
+constexpr uint32_t CRASH_CLEAR_MS  = 15000;    // clear the consecutive-crash counter once we've been alive this long
+constexpr uint8_t  CRASH_WIPE_LIMIT = 3;       // after this many consecutive panic reboots, wipe NVS and start fresh
 constexpr uint32_t LED_PWM_FREQ_HZ  = 25000;
 constexpr uint8_t  LED_PWM_RES_BIT  = 10;
 constexpr uint16_t LED_PWM_MAX      = (1u << LED_PWM_RES_BIT) - 1;
@@ -340,6 +346,7 @@ bool onMatterChange(bool state, uint8_t level, uint16_t mireds) {
 // Push local state back to Matter when it drifts meaningfully from the last-sent snapshot.
 void syncMatterIfDirty() {
     if (!Matter.isDeviceCommissioned()) return;
+    if (!Matter.isWiFiConnected()) return;   // don't poke the library while it's trying to recover the radio
     static uint32_t last_sync_ms = 0;
     static uint8_t  last_sent_bri = 255;
     static uint8_t  last_sent_cct = 255;
@@ -376,10 +383,36 @@ void handleBLERelease() {
     (void)ble_released; (void)ble_release_pending; (void)ble_release_start_ms;
 }
 
+// Wipe every NVS namespace so the next boot starts like a freshly-flashed device.
+static void wipeAllNvsAndReboot(const char* reason) {
+    Serial.printf("Auto-recovery: %s — wiping NVS and rebooting fresh\n", reason);
+    Serial.flush();
+    nvs_flash_erase();
+    delay(500);
+    ESP.restart();
+}
+
+// Consecutive panic-reboot counter. Reset once we've survived long enough (see CRASH_CLEAR_MS in loop()).
+static Preferences boot_prefs;
+static bool        crashes_cleared = false;
+
 void setup() {
     Serial.begin(115200);
     delay(1500);
     Serial.println("=== BrushlessLamp: closed-loop FOC position ===");
+
+    esp_reset_reason_t reason = esp_reset_reason();
+    boot_prefs.begin("boot", false);
+    uint8_t crashes = boot_prefs.getUChar("crashes", 0);
+    bool last_was_crash = (reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT);
+    if (last_was_crash) crashes++; else crashes = 0;
+    Serial.printf("boot: reset_reason=%d crashes=%u\n", (int)reason, crashes);
+    if (crashes >= CRASH_WIPE_LIMIT) {
+        boot_prefs.putUChar("crashes", 0);
+        boot_prefs.end();
+        wipeAllNvsAndReboot("consecutive crashes hit limit");
+    }
+    boot_prefs.putUChar("crashes", crashes);
 
     pinMode(PIN_NSP, OUTPUT);
     digitalWrite(PIN_NSP, HIGH);
@@ -486,14 +519,20 @@ void setup() {
     foc_cmd.add('W', doCct,        "CCT mix 0..100 (0=WW,100=CW)");
     foc_cmd.add('X', doReset,   "reset driver (clear latched fault)");
 
-    foc_timer = timerBegin(1000000);                          // 1 MHz counter
-    timerAttachInterrupt(foc_timer, &onFocTick);
-    timerAlarm(foc_timer, 1000000 / FOC_ISR_HZ, true, 0);     // alarm every 500 us = 2 kHz ISR rate
-
     matter_light.begin(commanded > LEDS_OFF_THRESH, cmdToMatterBrightness(commanded), cctToMireds(cct));
     matter_light.onChange(onMatterChange);
     Matter.begin();
     Serial.printf("free heap after Matter.begin(): %lu\n", (unsigned long)ESP.getFreeHeap());
+
+    // Start the FOC hw-timer AFTER Matter init so the commissioning storm doesn't compete with SVPWM interrupts.
+    foc_timer = timerBegin(1000000);
+    timerAttachInterrupt(foc_timer, &onFocTick);
+    timerAlarm(foc_timer, 1000000 / FOC_ISR_HZ, true, 0);
+
+    // Register the main loop task with the FreeRTOS watchdog so a library hang triggers a clean panic-reboot.
+    esp_task_wdt_config_t wdt_cfg = { .timeout_ms = WDT_TIMEOUT_MS, .idle_core_mask = 0, .trigger_panic = true };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_add(NULL);
 
     Serial.println("Ready.");
 }
@@ -639,6 +678,14 @@ void loop() {
         if (dt > max_loop_us) max_loop_us = dt;
     }
     prev_loop_us = now_us;
+
+    esp_task_wdt_reset();
+
+    // Clear the consecutive-crash counter once we've survived long enough that the Matter/WiFi stack has finished its startup dance.
+    if (!crashes_cleared && millis() > CRASH_CLEAR_MS) {
+        boot_prefs.putUChar("crashes", 0);
+        crashes_cleared = true;
+    }
 
     // Sync commanded to the physical shaft position whenever the motor is idle, so user input is always relative to reality.
     if (!motor.enabled && !reset_pending) {
