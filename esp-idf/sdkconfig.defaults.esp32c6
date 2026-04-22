@@ -1,1 +1,17 @@
 CONFIG_IDF_TARGET="esp32c6"
+
+## XIAO ESP32-C6 has the built-in USB_SERIAL_JTAG peripheral (NOT a USB OTG CDC, so
+## CONFIG_ESP_CONSOLE_USB_CDC does nothing here). Route the IDF console through
+## USB_SERIAL_JTAG so ESP_LOGI lands on /dev/cu.usbmodem.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+## Tell arduino-esp32 that Serial = HWCDC (routes through USB_SERIAL_JTAG on C6) instead
+## of UART0. Without this, Serial TX is GPIO 17 = PIN_NSP on our board — all the motor
+## telemetry vanished into the DRV8313's nSLEEP line and the USB reader saw nothing.
+CONFIG_ARDUINO_USB_CDC_ON_BOOT=y
+CONFIG_ARDUINO_USB_MODE=1
+
+## Boot prints the QR/onb-code on reset: we want them visible but we don't want the
+## default 2 s boot banner delay.
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y

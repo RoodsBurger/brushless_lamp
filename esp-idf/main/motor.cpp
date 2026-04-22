@@ -1,384 +1,214 @@
-#include "motor.h"
-#include "leds.h"
-#include "pins.h"
-#include "config.h"
-#include "persistence.h"
+// Phase 14a — motor-only validation. Ports the /tmp/m2_knob/BrushlessLamp/BrushlessLamp.ino
+// loop() body verbatim into a dedicated FreeRTOS task. The Arduino runtime is up (via
+// initArduino() in app_main), so SimpleFOC 2.4.0's ESP32 MCPWM driver picks its own
+// hardware path without any porting work.
+//
+// The one structural difference vs the Arduino sketch: Arduino wraps the spin-loop in a
+// 2 s-preempted task, so the sketch puts `while(true){...}` inside loop(). Here we own
+// the task; we just need to feed the IDLE watchdog with a periodic vTaskDelay(1) so
+// arduino-as-component's tick rate stays healthy under load (Phase 12 lesson).
 
-#include "esp_simplefoc.h"
-#include "sensors/Encoder.h"
-#include "driver/gpio.h"
-#include "driver/gptimer.h"
-#include "esp_log.h"
-#include "esp_timer.h"
-
-#include <atomic>
+#include <Arduino.h>
+#include <SimpleFOC.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <esp_log.h>
 #include <math.h>
+
+#include "motor.h"
+#include "config.h"
+#include "pins.h"
 
 static const char *TAG = "motor";
 
-static BLDCMotor       g_motor   = BLDCMotor(POLE_PAIRS);
-static BLDCDriver3PWM  g_driver  = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
-static Encoder         g_encoder = Encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
+static BLDCMotor       s_motor  (POLE_PAIRS);
+static BLDCDriver3PWM  s_driver (PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
+static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
 
-static std::atomic<bool> g_init_done{false};
+static volatile float  s_target        = 0.0f;
+static volatile float  s_shaft_velocity_cached = 0.0f;
+static volatile float  s_shaft_angle_cached    = 0.0f;
+static float           s_ramped_target = 0.0f;
+static float           s_accel         = TARGET_ACCEL_DEFAULT;
 
-static std::atomic<float> g_commanded{0.0f};
-static std::atomic<float> g_target{0.0f};
-static std::atomic<float> g_target_vel{0.0f};
-static float              g_accel = ACCEL_DEFAULT;
-static float              g_velocity_limit = VELOCITY_PRESETS[DEFAULT_SPEED_IDX];
+static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
+static void IRAM_ATTR doMotorB() { s_encoder.handleB(); }
 
-static void IRAM_ATTR enc_a_isr() { g_encoder.handleA(); }
-static void IRAM_ATTR enc_b_isr() { g_encoder.handleB(); }
+// Arduino's noInterrupts/interrupts macros are not always defined on IDF builds; use the
+// global interrupt toggles from the ESP32 HAL (same effect — portable across IDF targets).
+#define NOINT_BEGIN portDISABLE_INTERRUPTS()
+#define NOINT_END   portENABLE_INTERRUPTS()
 
-static gptimer_handle_t g_foc_timer = nullptr;
-
-// Matches Arduino M4's onFocTick(): SVPWM commutation runs at a guaranteed 1 kHz regardless
-// of what the app_loop_task is doing under Matter load. Started from app_main.cpp AFTER
-// esp_matter::start() so Matter's commissioning storm gets its interrupt resources first.
-static bool IRAM_ATTR foc_isr_cb(gptimer_handle_t, const gptimer_alarm_event_data_t *, void *) {
-    g_motor.loopFOC();
-    return false;
+static void updateRamp() {
+    static uint32_t last_us = 0;
+    uint32_t now = micros();
+    float dt = (now - last_us) * 1e-6f;
+    last_us = now;
+    if (dt <= 0 || dt > 0.1f) { s_ramped_target = s_target; return; }
+    float step = s_accel * dt;
+    if      (s_ramped_target <  s_target - step) s_ramped_target += step;
+    else if (s_ramped_target >  s_target + step) s_ramped_target -= step;
+    else                                         s_ramped_target  = s_target;
 }
 
-void motor_start_foc_timer() {
-    if (g_foc_timer) return;
-    gptimer_config_t cfg = {};
-    cfg.clk_src       = GPTIMER_CLK_SRC_DEFAULT;
-    cfg.direction     = GPTIMER_COUNT_UP;
-    cfg.resolution_hz = 1000000;
-    ESP_ERROR_CHECK(gptimer_new_timer(&cfg, &g_foc_timer));
-
-    gptimer_event_callbacks_t cbs = {};
-    cbs.on_alarm = foc_isr_cb;
-    ESP_ERROR_CHECK(gptimer_register_event_callbacks(g_foc_timer, &cbs, nullptr));
-    ESP_ERROR_CHECK(gptimer_enable(g_foc_timer));
-
-    gptimer_alarm_config_t alarm = {};
-    alarm.reload_count               = 0;
-    alarm.alarm_count                = 1000000 / FOC_ISR_HZ;
-    alarm.flags.auto_reload_on_alarm = true;
-    ESP_ERROR_CHECK(gptimer_set_alarm_action(g_foc_timer, &alarm));
-    ESP_ERROR_CHECK(gptimer_start(g_foc_timer));
-
-    ESP_LOGI(TAG, "FOC ISR up at %u Hz", (unsigned)FOC_ISR_HZ);
+static void flushControlState() {
+    s_motor.PID_velocity.reset();
+    s_motor.shaft_velocity = 0.0f;
+    s_ramped_target        = 0.0f;
 }
 
-// Non-blocking nSLEEP fault-recovery state machine — mirrors M4's resetDriverBegin/Step
-// pair (.ino:253–271). Pulses nSLEEP low for 50 µs to clear DRV8313 latched OCP/TSD,
-// waits NSP_WAKE_US for the part to come out of sleep, re-syncs electrical_angle from the
-// sensor (in case the rotor slipped during a stall), then re-enables the driver. Driven
-// by reset_driver_step() at the top of motor_tick(); never blocks the task.
-constexpr uint32_t NSP_LOW_US  = 50;
-constexpr uint32_t NSP_WAKE_US = 2050;
-enum class RecoverState : uint8_t { Idle, NSpLow, Settling };
-static RecoverState s_recover_state = RecoverState::Idle;
-static int64_t      s_recover_t0_us = 0;
-
-static void halt_motor() {
-    g_motor.disable();
-    g_motor.PID_velocity.reset();
-    g_motor.P_angle.reset();
-    g_motor.shaft_velocity = 0.0f;
+static void resetDriver() {
+    s_motor.disable();
+    flushControlState();
+    digitalWrite(PIN_NSP, LOW);
+    delayMicroseconds(50);
+    digitalWrite(PIN_NSP, HIGH);
+    delay(2);
+    s_motor.enable();
 }
 
-static void reset_driver_begin() {
-    halt_motor();
-    gpio_set_level((gpio_num_t)PIN_NSP, 0);
-    s_recover_t0_us = esp_timer_get_time();
-    s_recover_state = RecoverState::NSpLow;
+static void haltMotor() {
+    s_target = 0.0f;
+    s_motor.disable();
+    flushControlState();
 }
 
-static void reset_driver_step() {
-    if (s_recover_state == RecoverState::Idle) return;
-    int64_t elapsed = esp_timer_get_time() - s_recover_t0_us;
-    if (s_recover_state == RecoverState::NSpLow && elapsed >= NSP_LOW_US) {
-        gpio_set_level((gpio_num_t)PIN_NSP, 1);
-        s_recover_state = RecoverState::Settling;
-    }
-    if (s_recover_state == RecoverState::Settling && elapsed >= NSP_WAKE_US) {
-        // Re-sync from the sensor before SVPWM resumes — if the rotor slipped during the
-        // jam, the cached electrical_angle would drive the wrong phase and produce no torque.
-        g_motor.electrical_angle = g_motor.electricalAngle();
-        g_motor.enable();
-        s_recover_state = RecoverState::Idle;
-    }
-}
+// Fixed-point formatters to dodge soft-float printf — ESP32-C6 has no FPU and each %.2f
+// costs ~300 us, enough to blow the inner-loop budget.
+#define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
+#define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
 
-void motor_init_and_foc() {
-    if (g_init_done.load()) return;
+static void motor_foc_task(void *) {
+    uint32_t prev_loop_us   = 0;
+    uint32_t max_loop_us    = 0;
+    uint32_t last_active_ms = 0;
+    uint32_t stall_start_ms = 0;
+    uint32_t enable_time_ms = 0;
+    uint32_t last_print_ms  = 0;
+    uint32_t iter           = 0;
 
-    gpio_config_t nsp_io = {};
-    nsp_io.pin_bit_mask = (1ULL << PIN_NSP);
-    nsp_io.mode         = GPIO_MODE_OUTPUT;
-    nsp_io.pull_up_en   = GPIO_PULLUP_DISABLE;
-    nsp_io.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    nsp_io.intr_type    = GPIO_INTR_DISABLE;
-    ESP_ERROR_CHECK(gpio_config(&nsp_io));
-    gpio_set_level((gpio_num_t)PIN_NSP, 1);
-
-    g_encoder.quadrature = Quadrature::ON;
-    g_encoder.pullup     = Pullup::USE_INTERN;
-    g_encoder.init();
-    g_encoder.enableInterrupts(enc_a_isr, enc_b_isr);
-    g_motor.linkSensor(&g_encoder);
-
-    g_driver.voltage_power_supply = SUPPLY_VOLTAGE;
-    g_driver.voltage_limit        = SUPPLY_VOLTAGE;
-    g_driver.pwm_frequency        = PWM_FREQ_HZ;
-    int driver_ok = g_driver.init(0);
-    ESP_LOGI(TAG, "driver.init() = %d", driver_ok);
-    g_motor.linkDriver(&g_driver);
-
-    // Skip phase_resistance — PID outputs voltage directly (capped at voltage_limit).
-    // Setting phase_resistance back made the motor chop because move() converts current_sp
-    // to voltage with bemf compensation, and the bemf term flips sign at velocity=0,
-    // creating discontinuities at every direction reversal.
-    // g_motor.phase_resistance  = PHASE_RESISTANCE;
-    g_motor.KV_rating            = KV_RATING;
-    g_motor.current_limit        = CURRENT_LIMIT;
-    g_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
-    // Cap PID-output voltage at 8 V. Our 5 Ω motor is below SimpleFOC Mini's recommended
-    // >10 Ω → at the SimpleFOC default 12 V, peak coil current = 2.4 A (right at DRV8313's
-    // 2.5 A rating) → loud coil whine + magnetostriction. 8 V → 1.6 A peak, much quieter,
-    // still strong enough for the loaded lamp. Driver bus stays at 24 V so SVPWM has full
-    // supply headroom; only the PID setpoint is clamped.
-    g_motor.voltage_limit        = 8.0f;
-    g_motor.controller           = MotionControlType::angle;
-    g_motor.torque_controller    = TorqueControlType::voltage;
-    g_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
-    g_motor.motion_downsample    = MOTION_DOWNSAMPLE;
-
-    g_motor.PID_velocity.P           = PID_VEL_P;
-    g_motor.PID_velocity.I           = PID_VEL_I;
-    g_motor.PID_velocity.D           = PID_VEL_D;
-    g_motor.PID_velocity.output_ramp = PID_VEL_OUTPUT_RAMP;
-    g_motor.LPF_velocity.Tf          = LPF_VEL_TF;
-    g_motor.P_angle.P                = PID_ANGLE_P;
-
-    g_motor.init();
-    ESP_LOGI(TAG, "motor.init() done");
-
-    // Always run fresh alignSensor each boot. Persisting the calibration was tried and
-    // failed badly — the saved sensor_direction could become invalid between sessions
-    // (producing a runaway where the motor thinks it's correcting toward target but
-    // actually drives away from it, observed as shaft_angle growing past 80 rad with a
-    // commanded target of 9). Motor-only build runs fresh alignment every boot and is
-    // smooth, so we match that. If calibration is ever persisted again it must validate
-    // the direction on boot (e.g., apply a small test voltage and check the sensor moves
-    // in the expected direction) before trusting the saved value.
-    persistence_clear_foc_calibration();
-    int foc_ok = g_motor.initFOC();
-    ESP_LOGI(TAG, "motor.initFOC() = %d  zero_elec=%.4f  dir=%d",
-             foc_ok, (double)g_motor.zero_electric_angle, (int)g_motor.sensor_direction);
-    if (!foc_ok) ESP_LOGE(TAG, "motor.initFOC() FAILED — alignment didn't converge");
-
-    g_motor.velocity_limit = g_velocity_limit;
-
-    float cmd = g_commanded.load();
-    g_motor.sensor_offset -= cmd;
-    g_target.store(cmd);
-    g_target_vel.store(0.0f);
-    g_motor.loopFOC();
-
-    g_init_done.store(true);
-    ESP_LOGI(TAG, "motor + FOC ready (anchored cmd=%.2f)", (double)cmd);
-
-    // Start the 1 kHz commutation ISR as the last init step — idempotent, safe to call
-    // from any init path (commissioning-complete event, post-reboot, short-click bench).
-    motor_start_foc_timer();
-}
-
-bool motor_is_ready()             { return g_init_done.load(); }
-void motor_set_commanded(float r) {
-    if (r < POS_MIN) r = POS_MIN;
-    if (r > POS_MAX) r = POS_MAX;
-    g_commanded.store(r);
-}
-float motor_get_commanded()       { return g_commanded.load(); }
-float motor_get_shaft_angle()     { return g_init_done.load() ? g_motor.shaft_angle : 0.0f; }
-
-void motor_set_velocity_preset(uint8_t idx) {
-    if (idx >= VELOCITY_PRESET_N) idx = DEFAULT_SPEED_IDX;
-    g_velocity_limit = VELOCITY_PRESETS[idx];
-    if (g_init_done.load()) g_motor.velocity_limit = g_velocity_limit;
-    ESP_LOGI(TAG, "velocity preset = %.1f rad/s", (double)g_velocity_limit);
-}
-
-bool motor_is_enabled() { return g_init_done.load() && g_motor.enabled; }
-
-// Trapezoidal velocity profile — matches Arduino M3b/M4 exactly. Without this the motor
-// sprints straight at velocity_limit, which at 22 rad/s produces encoder edges every ~68 µs
-// — faster than our ~200 µs FOC ISR can yield to the MT6701 GPIO ISR, so shaft_angle freezes
-// and the stall detector fires at specific shaft angles.
-static void ramp_target() {
-    static int64_t last_us = 0;
-    int64_t now_us = esp_timer_get_time();
-    if (last_us == 0) { last_us = now_us; return; }
-    float dt = (float)(now_us - last_us) * 1e-6f;
-    last_us = now_us;
-    if (dt <= 0 || dt > 0.1f) return;
-
-    float cmd  = g_commanded.load();
-    float tgt  = g_target.load();
-    float tvel = g_target_vel.load();
-    float err = cmd - tgt;
-    // Deadband — when the residual is below 0.01 rad and we're stopped, snap target
-    // to cmd cleanly. Without this, sensor noise (shaft_angle ≈ -0.0001 at rest) was
-    // making the per-edge anchor set target slightly off cmd, which ramp_target then
-    // tried to chase at full velocity_limit (decel_dist=0 with tvel=0), generating a
-    // tvel of ~0.006 per tick. That tripped the want_motion `ramping` check and woke
-    // the motor every 300 ms — visible in the log as "motor disabled (idle for 300 ms)"
-    // repeating forever.
-    if (fabsf(err) < 0.01f && fabsf(tvel) < 0.01f) {
-        g_target.store(cmd);
-        g_target_vel.store(0.0f);
-        return;
-    }
-    float decel_dist = (tvel * tvel) / (2.0f * g_accel);
-    float desired_vel = (fabsf(err) <= decel_dist) ? 0.0f
-                                                   : (err > 0 ? 1.0f : -1.0f) * g_velocity_limit;
-
-    float vel_step = g_accel * dt;
-    if      (tvel < desired_vel - vel_step) tvel += vel_step;
-    else if (tvel > desired_vel + vel_step) tvel -= vel_step;
-    else                                    tvel  = desired_vel;
-
-    tgt += tvel * dt;
-
-    if ((err > 0 && tgt >= cmd) || (err < 0 && tgt <= cmd)) {
-        tgt  = cmd;
-        tvel = 0.0f;
-    }
-    g_target.store(tgt);
-    g_target_vel.store(tvel);
-}
-
-static int64_t s_stall_start_us = 0;
-static int64_t s_enable_time_us = 0;
-static int64_t s_last_active_us = 0;
-static std::atomic<bool> s_stall_synced{false};  // set on stall; app_driver consumes to push corrected position to Matter
-
-bool motor_consume_stall_event() { return s_stall_synced.exchange(false); }
-
-void motor_tick() {
-    if (!g_init_done.load()) {
-        leds_update(0.0f);
-        return;
-    }
-
-    // Advance the non-blocking nSLEEP recovery first so its timer keeps ticking even if
-    // nothing else in this iteration touches the motor.
-    reset_driver_step();
-
-    // No per-edge anchor — leaving target untouched on disable is what keeps idle truly idle.
-    // Earlier versions snapped target=shaft_angle on the disable→tick boundary; that created
-    // a wake/idle 300 ms cycle when shaft parked in the (0, IDLE_POS_THRESH) band: target got
-    // pulled to e.g., 0.10, ramping=|cmd-target|=0.10 > 0.01 fired want_motion, motor woke,
-    // moved shaft slightly, idle disable fired, anchor pulled target again, repeat. The two
-    // legitimate cases that the anchor used to handle are covered elsewhere:
-    //   - stall halt: stall handler explicitly snaps cmd/target/tvel = shaft (give-up)
-    //   - user wakes motor: ramping triggers naturally from cmd updates
-    ramp_target();
-
-    float cmd  = g_commanded.load();
-    float tgt  = g_target.load();
-    float tvel = g_target_vel.load();
-    // Deadband 0.01 rad / 0.01 rad/s matches ramp_target's snap-to-cmd threshold so the
-    // wake/idle decision is consistent. 1e-4 was too tight — sensor jitter triggered it.
-    bool ramping     = fabsf(cmd - tgt) > 0.01f || fabsf(tvel) > 0.01f;
-    // Match M3b/M4 exactly: pos_err_big requires `g_motor.enabled`. Without this qualifier,
-    // every external shaft drift while disabled (gravity, user nudging, vibration) triggered
-    // pos_err_big → want_motion=true → motor woke up and held position. User-visible as
-    // "motor still has torque at idle". on_knob's `motor_is_enabled() ? cmd : shaft` anchor
-    // already handles the drift case for user input — pos_err_big needn't. Wake-from-idle
-    // still works through `ramping` (any new commanded value moves cmd ≠ tgt).
-    bool pos_err_big = g_motor.enabled && fabsf(tgt - g_motor.shaft_angle) > IDLE_POS_THRESH;
-    bool want_motion = ramping || pos_err_big;
-
-    // Transition log so "motor never goes idle" can be debugged from serial.
-    static bool s_prev_want_motion = false;
-    if (want_motion != s_prev_want_motion) {
-        ESP_LOGI(TAG, "%s: cmd=%.2f ang=%.2f pos_err=%.2f tvel=%.2f",
-                 want_motion ? "wake" : "idle",
-                 (double)cmd, (double)g_motor.shaft_angle,
-                 (double)(tgt - g_motor.shaft_angle), (double)tvel);
-        s_prev_want_motion = want_motion;
-    }
-
-    int64_t now_us = esp_timer_get_time();
-
-    if (want_motion) {
-        s_last_active_us = now_us;
-        if (!g_motor.enabled && s_recover_state == RecoverState::Idle) {
-            // Re-enable via the non-blocking nSLEEP pulse — clears any latched DRV8313 OCP/TSD
-            // before SVPWM resumes (M4 pattern: every disable→enable transition gets a fresh pulse).
-            reset_driver_begin();
-            s_enable_time_us = now_us;
-            s_stall_start_us = 0;
+    while (true) {
+        uint32_t now_us = micros();
+        if (prev_loop_us != 0) {
+            uint32_t dt = now_us - prev_loop_us;
+            if (dt > max_loop_us) max_loop_us = dt;
         }
-        bool in_warmup = (now_us - s_enable_time_us) < ((int64_t)STALL_WARMUP_MS * 1000);
-        // Simple, conservative stall criterion: target commanding motion (|tvel| > 1) AND
-        // shaft is essentially stopped (|shvel| < 1) AND there's real distance to cover
-        // (pos_err > 1 rad). Only a real hand-grab or jam keeps the shaft below 1 rad/s
-        // sustained for STALL_TIMEOUT_MS while target wants to move. Dynamic ratio-based
-        // threshold (Phase 6c) was triggering on heavy-load slow tracking and aborting
-        // legitimate moves.
-        bool actively_seeking  = fabsf(tvel) > STALL_VEL_THRESHOLD;
-        bool shaft_stuck       = fabsf(g_motor.shaft_velocity) < STALL_VEL_THRESHOLD;
-        bool pos_err_big_stall = fabsf(tgt - g_motor.shaft_angle) > 1.0f;
-        if (in_warmup) {
-            s_stall_start_us = 0;  // don't carry stall accumulation across the warmup boundary
-        } else if (actively_seeking && shaft_stuck && pos_err_big_stall) {
-            if (s_stall_start_us == 0) {
-                s_stall_start_us = now_us;
-            } else if (now_us - s_stall_start_us > ((int64_t)STALL_TIMEOUT_MS * 1000)) {
-                ESP_LOGW(TAG, "stall at ang=%.2f seeking cmd=%.2f — halt",
-                         (double)g_motor.shaft_angle, (double)cmd);
-                halt_motor();   // disable + flush PID
-                // Explicit "give up" — snap commanded/target to current shaft so we don't
-                // re-attempt the failing move on the next tick. User must send a fresh command
-                // (knob or Matter slider change) to wake the motor again.
-                float a = g_motor.shaft_angle;
-                g_commanded.store(a);
-                g_target.store(a);
-                g_target_vel.store(0.0f);
-                s_stall_start_us = 0;
-                s_stall_synced.store(true);   // app_driver will push the corrected position to Matter
+        prev_loop_us = now_us;
+
+        bool want_motion  = fabsf(s_target)        > IDLE_TARGET_THRESH;
+        bool ramping_down = fabsf(s_ramped_target) > IDLE_TARGET_THRESH;
+
+        if (want_motion) {
+            last_active_ms = millis();
+            if (!s_motor.enabled) {
+                resetDriver();
+                enable_time_ms = millis();
+                stall_start_ms = 0;
+            }
+            bool in_warmup = (millis() - enable_time_ms) < STALL_WARMUP_MS;
+            if (!in_warmup && fabsf(s_motor.shaft_velocity) < STALL_VEL_THRESHOLD) {
+                if (stall_start_ms == 0) stall_start_ms = millis();
+                else if (millis() - stall_start_ms > STALL_TIMEOUT_MS) {
+                    ESP_LOGW(TAG, "stall at ang=%ld.%ld while T=%ld.%02ld — halted",
+                             FX_HI(s_motor.shaft_angle, 10), FX_LO(s_motor.shaft_angle, 10),
+                             FX_HI(s_target,            100), FX_LO(s_target,           100));
+                    haltMotor();
+                    stall_start_ms = 0;
+                }
+            } else {
+                stall_start_ms = 0;
             }
         } else {
-            s_stall_start_us = 0;
+            stall_start_ms = 0;
+            if (ramping_down) last_active_ms = millis();
+            if (s_motor.enabled && !ramping_down && millis() - last_active_ms > IDLE_DISABLE_MS) {
+                s_motor.disable();
+            }
         }
 
-        // Diagnostic: dump stall-decision inputs periodically. Tight 100 ms cadence once
-        // the stall counter is accumulating so the timer ramp toward STALL_TIMEOUT_MS is
-        // visible. cmd added so we can correlate user intent with what the trapezoid is doing.
-        static int64_t s_diag_last_us = 0;
-        int64_t diag_interval = (s_stall_start_us != 0) ? 100000 : 250000;
-        if (now_us - s_diag_last_us > diag_interval) {
-            s_diag_last_us = now_us;
-            ESP_LOGI(TAG, "diag: cmd=%.2f tgt=%.2f ang=%.2f tvel=%.2f shvel=%.2f pos_err=%.2f warmup=%d stall_acc=%lldms",
-                     (double)cmd, (double)tgt, (double)g_motor.shaft_angle,
-                     (double)tvel, (double)g_motor.shaft_velocity,
-                     (double)(tgt - g_motor.shaft_angle), (int)in_warmup,
-                     s_stall_start_us ? (long long)((now_us - s_stall_start_us) / 1000) : 0LL);
+        updateRamp();
+        s_motor.loopFOC();
+        s_motor.move(s_ramped_target);
+
+        s_shaft_velocity_cached = s_motor.shaft_velocity;
+        s_shaft_angle_cached    = s_motor.shaft_angle;
+
+        if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
+            last_print_ms = millis();
+            // Use printf (IDF stdout → USB_SERIAL_JTAG) rather than Serial.printf — Arduino
+            // Serial on C6 defaults to UART0 on GPIO 16/17 where our nSLEEP lives, and the
+            // output never reaches the host. IDF's stdout is wired to USB_SERIAL_JTAG so
+            // the format matches M2-knob's reference log byte-for-byte.
+            printf("tgt:%ld.%02ld ramp:%ld.%02ld vel:%ld.%02ld ang:%ld.%ld en:%d maxLp:%luus\n",
+                   FX_HI(s_target,                  100), FX_LO(s_target,                  100),
+                   FX_HI(s_ramped_target,           100), FX_LO(s_ramped_target,           100),
+                   FX_HI(s_motor.shaft_velocity,    100), FX_LO(s_motor.shaft_velocity,    100),
+                   FX_HI(s_motor.shaft_angle,        10), FX_LO(s_motor.shaft_angle,        10),
+                   (int)s_motor.enabled,
+                   (unsigned long)max_loop_us);
+            max_loop_us = 0;
         }
-    } else {
-        s_stall_start_us = 0;
-        if (g_motor.enabled && now_us - s_last_active_us > ((int64_t)IDLE_DISABLE_MS * 1000)) {
-            g_motor.disable();
-            // motor.disable() ends with setPwm(0,0,0). With our hardwired-EN DRV8313 that
-            // means all three motor terminals get pulled to GND — coils shorted = back-EMF
-            // braking torque the user feels as "still has torque at idle". Override with
-            // a balanced midpoint duty (50% on each phase): all terminals at the same
-            // potential → no current flow → no torque. Standard SimpleFOC trick when the
-            // driver enable pin can't be controlled in software.
-            g_driver.setPwm(SUPPLY_VOLTAGE * 0.5f, SUPPLY_VOLTAGE * 0.5f, SUPPLY_VOLTAGE * 0.5f);
-            ESP_LOGI(TAG, "motor disabled (idle for %lld ms)", (long long)((now_us - s_last_active_us) / 1000));
-        }
+
+        // Feed IDLE-WDT under the 1 kHz FreeRTOS tick — once per 256 iters is enough.
+        if ((++iter & 0xFF) == 0) vTaskDelay(1);
     }
-
-    // loopFOC runs in the GPTimer ISR (see foc_isr_cb). Task only updates voltage.q via move().
-    g_motor.move(g_target.load());
-    leds_update(g_motor.shaft_angle);
 }
+
+void motor_init_and_start() {
+    pinMode(PIN_NSP, OUTPUT);
+    digitalWrite(PIN_NSP, HIGH);
+    delay(2);
+
+    s_encoder.quadrature = Quadrature::ON;
+    s_encoder.pullup     = Pullup::USE_INTERN;
+    s_encoder.init();
+    s_encoder.enableInterrupts(doMotorA, doMotorB);
+    s_motor.linkSensor(&s_encoder);
+
+    s_driver.voltage_power_supply = SUPPLY_VOLTAGE;
+    s_driver.voltage_limit        = SUPPLY_VOLTAGE;
+    s_driver.pwm_frequency        = PWM_FREQ_HZ;
+    printf("driver.init()=%d\n", s_driver.init());
+    s_motor.linkDriver(&s_driver);
+
+    s_motor.phase_resistance     = PHASE_RESISTANCE;
+    s_motor.KV_rating            = KV_RATING;
+    s_motor.current_limit        = CURRENT_LIMIT;
+    s_motor.velocity_limit       = VELOCITY_LIMIT;
+    s_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
+    s_motor.controller           = MotionControlType::velocity;
+    s_motor.torque_controller    = TorqueControlType::voltage;
+    s_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
+    s_motor.motion_downsample    = MOTION_DOWNSAMPLE;
+
+    s_motor.PID_velocity.P           = PID_P;
+    s_motor.PID_velocity.I           = PID_I;
+    s_motor.PID_velocity.D           = PID_D;
+    s_motor.PID_velocity.output_ramp = PID_OUTPUT_RAMP;
+    s_motor.LPF_velocity.Tf          = LPF_TF;
+
+    // Skip useMonitoring — Arduino Serial is UART0 on this board and SimpleFOC's monitor
+    // only adds noise relative to our own 1-Hz tgt/ramp/vel line. printf goes to the
+    // working USB_SERIAL_JTAG console either way.
+    printf("motor.init()=%d\n", s_motor.init());
+
+    int foc_ok = s_motor.initFOC();
+    printf("motor.initFOC()=%d  zero_elec=%.4f  dir=%d\n",
+           foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
+    if (!foc_ok) printf("FOC init failed\n");
+
+    // Priority 5: above CHIP task (2) so Matter can't starve us in 14c, below TCP/IP (18)
+    // so the network stack's still responsive. Stack 8 kB covers SimpleFOC + monitor.
+    xTaskCreate(motor_foc_task, "motor_foc", 8192, nullptr, 5, nullptr);
+}
+
+void motor_set_target_velocity(float rad_per_sec) {
+    if (rad_per_sec >  VELOCITY_LIMIT) rad_per_sec =  VELOCITY_LIMIT;
+    if (rad_per_sec < -VELOCITY_LIMIT) rad_per_sec = -VELOCITY_LIMIT;
+    s_target = rad_per_sec;
+}
+
+float motor_get_target_velocity() { return s_target; }
+float motor_get_shaft_velocity()  { return s_shaft_velocity_cached; }
+float motor_get_shaft_angle()     { return s_shaft_angle_cached; }
+void  motor_stop()                { s_target = 0.0f; }

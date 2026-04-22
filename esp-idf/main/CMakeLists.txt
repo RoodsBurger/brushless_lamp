@@ -1,24 +1,30 @@
 idf_component_register(
     SRCS
-        "app_main.cpp"
-        "app_driver.cpp"
-        "leds.cpp"
+        "main.cpp"
         "motor.cpp"
         "input.cpp"
-        "persistence.cpp"
     INCLUDE_DIRS "."
-    PRIV_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}"
     REQUIRES
-        chip
-        esp_matter
-        esp_matter_console
-        nvs_flash
+        arduino-esp32
+        SimpleFOC
         driver
-        esp_driver_gpio
+        nvs_flash
+        esp_driver_mcpwm
         esp_driver_ledc
-        esp_driver_pcnt
-        esp_driver_gptimer
-        espressif__esp_simplefoc
 )
 
-set_property(TARGET ${COMPONENT_LIB} PROPERTY CXX_STANDARD 17)
+## main/motor.cpp includes <SimpleFOC.h>, so SimpleFOC's header-level warnings
+## (nested /* in MagneticSensorSPI.h) surface here too — silence them once.
+target_compile_options(${COMPONENT_LIB} PRIVATE
+    -Wno-error=comment
+    -Wno-missing-field-initializers
+    -Wno-volatile
+)
+
+## arduino-esp32 3.3.8 on C6 does not expose ARDUINO_USB_CDC_ON_BOOT in Kconfig, so
+## Serial defaults to UART0 (GPIO 17 = PIN_NSP on our board). Define it as a compile
+## macro so Arduino-platform code that uses Serial gets HWCDC (USB_SERIAL_JTAG) instead.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    ARDUINO_USB_CDC_ON_BOOT=1
+    ARDUINO_USB_MODE=1
+)

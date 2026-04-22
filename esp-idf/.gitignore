@@ -1,9 +1,9 @@
+## Build artifacts — authoritative build tree lives at ~/esp/brushlesslamp-idf (no spaces).
+## ESP-IDF's CMake resolves symlinks, and libsodium's -include flag isn't shell-quoted,
+## so any build under a spaces-in-path directory fails at libsodium. We rsync this
+## source tree out to the no-space path before `idf.py build`.
 build/
 managed_components/
+dependencies.lock
 sdkconfig
 sdkconfig.old
-dependencies.lock
-production/out/
-.cache/
-.vscode/
-compile_commands.json
