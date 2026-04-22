@@ -286,13 +286,16 @@ int BLDCDriver3PWM::init()
         setMcpwmGroupUsed(auto_mcpwm_group); // mark this group is used.
         printf("Auto. Current Driver uses Mcpwm GroupId:%d\n", auto_mcpwm_group);
 
-        // Init mcpwm driver.
+        // Tried switching to MCPWM_TIMER_COUNT_MODE_UP_DOWN (center-aligned PWM, lower
+        // harmonics) — but the generator action setup below only configures UP-direction
+        // compare events; UP_DOWN requires matching DOWN-direction actions or the output
+        // is undefined and the chip aborts at init. Reverted to UP-only edge-aligned for now.
         mcpwm_timer_config_t timer_config = {
             .group_id = auto_mcpwm_group,
             .clk_src = MCPWM_TIMER_CLK_SRC,
             .resolution_hz = _PWM_TIMEBASE_RESOLUTION_HZ,
-            .count_mode = MCPWM_TIMER_COUNT_MODE_UP,                                      // centeral mode
-            .period_ticks = (uint32_t)(1 * _PWM_TIMEBASE_RESOLUTION_HZ / _PWM_FREQUENCY), // real frequency is pwm_frequency/2
+            .count_mode = MCPWM_TIMER_COUNT_MODE_UP,
+            .period_ticks = (uint32_t)(_PWM_TIMEBASE_RESOLUTION_HZ / _PWM_FREQUENCY),
         };
         ESP_ERROR_CHECK(mcpwm_new_timer(&timer_config, &timer));
 
@@ -416,13 +419,13 @@ int BLDCDriver3PWM::init(int _mcpwm_group)
     setMcpwmGroupUsed(_mcpwm_group); // mark this group is used.
     printf("Current Driver uses Mcpwm GroupId:%d\n", _mcpwm_group);
 
-    // Init mcpwm driver.
+    // UP-only mode (see explanation in init() above — center-aligned needs more work).
     mcpwm_timer_config_t timer_config = {
         .group_id = _mcpwm_group,
         .clk_src = MCPWM_TIMER_CLK_SRC,
         .resolution_hz = _PWM_TIMEBASE_RESOLUTION_HZ,
-        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,                                      // centeral mode
-        .period_ticks = (uint32_t)(1 * _PWM_TIMEBASE_RESOLUTION_HZ / _PWM_FREQUENCY), // real frequency is pwm_frequency/2
+        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,
+        .period_ticks = (uint32_t)(_PWM_TIMEBASE_RESOLUTION_HZ / _PWM_FREQUENCY),
     };
     ESP_ERROR_CHECK(mcpwm_new_timer(&timer_config, &timer));
 

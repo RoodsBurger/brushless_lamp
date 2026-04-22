@@ -130,19 +130,20 @@ void motor_init_and_foc() {
     ESP_LOGI(TAG, "driver.init() = %d", driver_ok);
     g_motor.linkDriver(&g_driver);
 
-    // Intentionally NOT setting phase_resistance — that flips arduino-foc 2.3.0's voltage-mode
-    // behavior to match 2.4.0's: PID_velocity.limit becomes voltage_limit instead of
-    // current_limit (0.5A) and move() outputs voltage.q = current_sp directly instead of
-    // current_sp * R + bemf. KV_rating still set; current_limit kept for any future
-    // current-mode controller.
+    // Skip phase_resistance — PID outputs voltage directly (capped at voltage_limit).
+    // Setting phase_resistance back made the motor chop because move() converts current_sp
+    // to voltage with bemf compensation, and the bemf term flips sign at velocity=0,
+    // creating discontinuities at every direction reversal.
     // g_motor.phase_resistance  = PHASE_RESISTANCE;
     g_motor.KV_rating            = KV_RATING;
     g_motor.current_limit        = CURRENT_LIMIT;
     g_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
-    // Leave motor.voltage_limit at SimpleFOC's DEF_POWER_SUPPLY=12 V default — user
-    // confirmed 12 V is enough torque for our loaded lamp and keeps the stall current
-    // comfortably below the motor's rating. Driver's own voltage_limit stays at 24 V so
-    // SVPWM has the full supply headroom for the 12 V swing.
+    // Cap PID-output voltage at 8 V. Our 5 Ω motor is below SimpleFOC Mini's recommended
+    // >10 Ω → at the SimpleFOC default 12 V, peak coil current = 2.4 A (right at DRV8313's
+    // 2.5 A rating) → loud coil whine + magnetostriction. 8 V → 1.6 A peak, much quieter,
+    // still strong enough for the loaded lamp. Driver bus stays at 24 V so SVPWM has full
+    // supply headroom; only the PID setpoint is clamped.
+    g_motor.voltage_limit        = 8.0f;
     g_motor.controller           = MotionControlType::angle;
     g_motor.torque_controller    = TorqueControlType::voltage;
     g_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
@@ -222,6 +223,18 @@ static void ramp_target() {
     float tgt  = g_target.load();
     float tvel = g_target_vel.load();
     float err = cmd - tgt;
+    // Deadband — when the residual is below 0.01 rad and we're stopped, snap target
+    // to cmd cleanly. Without this, sensor noise (shaft_angle ≈ -0.0001 at rest) was
+    // making the per-edge anchor set target slightly off cmd, which ramp_target then
+    // tried to chase at full velocity_limit (decel_dist=0 with tvel=0), generating a
+    // tvel of ~0.006 per tick. That tripped the want_motion `ramping` check and woke
+    // the motor every 300 ms — visible in the log as "motor disabled (idle for 300 ms)"
+    // repeating forever.
+    if (fabsf(err) < 0.01f && fabsf(tvel) < 0.01f) {
+        g_target.store(cmd);
+        g_target_vel.store(0.0f);
+        return;
+    }
     float decel_dist = (tvel * tvel) / (2.0f * g_accel);
     float desired_vel = (fabsf(err) <= decel_dist) ? 0.0f
                                                    : (err > 0 ? 1.0f : -1.0f) * g_velocity_limit;
@@ -258,30 +271,22 @@ void motor_tick() {
     // nothing else in this iteration touches the motor.
     reset_driver_step();
 
-    // Per-edge re-anchor on disable. Sync target/target_vel to actual shaft position so the
-    // trapezoid restarts cleanly from where the motor stopped. We deliberately do NOT touch
-    // g_commanded — that's user/Matter intent, and the loop order
-    //   input_poll() → motor_tick()
-    // means a Matter callback or knob press between disable and the next tick has already
-    // updated g_commanded BEFORE this anchor runs. Snapping commanded to shaft_angle here
-    // would silently drop that input and look like "motor randomly ignores Matter commands".
-    // Stall halt has its own explicit g_commanded snap (give-up semantics).
-    static bool s_was_enabled = false;
-    if (g_motor.enabled) {
-        s_was_enabled = true;
-    } else if (s_was_enabled && s_recover_state == RecoverState::Idle) {
-        float a = g_motor.shaft_angle;
-        g_target.store(a);
-        g_target_vel.store(0.0f);
-        s_was_enabled = false;
-    }
-
+    // No per-edge anchor — leaving target untouched on disable is what keeps idle truly idle.
+    // Earlier versions snapped target=shaft_angle on the disable→tick boundary; that created
+    // a wake/idle 300 ms cycle when shaft parked in the (0, IDLE_POS_THRESH) band: target got
+    // pulled to e.g., 0.10, ramping=|cmd-target|=0.10 > 0.01 fired want_motion, motor woke,
+    // moved shaft slightly, idle disable fired, anchor pulled target again, repeat. The two
+    // legitimate cases that the anchor used to handle are covered elsewhere:
+    //   - stall halt: stall handler explicitly snaps cmd/target/tvel = shaft (give-up)
+    //   - user wakes motor: ramping triggers naturally from cmd updates
     ramp_target();
 
     float cmd  = g_commanded.load();
     float tgt  = g_target.load();
     float tvel = g_target_vel.load();
-    bool ramping     = fabsf(cmd - tgt) > 1e-4f || fabsf(tvel) > 1e-4f;
+    // Deadband 0.01 rad / 0.01 rad/s matches ramp_target's snap-to-cmd threshold so the
+    // wake/idle decision is consistent. 1e-4 was too tight — sensor jitter triggered it.
+    bool ramping     = fabsf(cmd - tgt) > 0.01f || fabsf(tvel) > 0.01f;
     // Match M3b/M4 exactly: pos_err_big requires `g_motor.enabled`. Without this qualifier,
     // every external shaft drift while disabled (gravity, user nudging, vibration) triggered
     // pos_err_big → want_motion=true → motor woke up and held position. User-visible as
@@ -361,11 +366,14 @@ void motor_tick() {
     } else {
         s_stall_start_us = 0;
         if (g_motor.enabled && now_us - s_last_active_us > ((int64_t)IDLE_DISABLE_MS * 1000)) {
-            // Match Arduino M4: just motor.disable() — that stops SVPWM output, leaving the
-            // motor in SimpleFOC's default low-current state. DRV8313 EN pins are hardwired
-            // high on our board so we can't tri-state from software; nSLEEP pulse is only
-            // for fault recovery, not idle.
             g_motor.disable();
+            // motor.disable() ends with setPwm(0,0,0). With our hardwired-EN DRV8313 that
+            // means all three motor terminals get pulled to GND — coils shorted = back-EMF
+            // braking torque the user feels as "still has torque at idle". Override with
+            // a balanced midpoint duty (50% on each phase): all terminals at the same
+            // potential → no current flow → no torque. Standard SimpleFOC trick when the
+            // driver enable pin can't be controlled in software.
+            g_driver.setPwm(SUPPLY_VOLTAGE * 0.5f, SUPPLY_VOLTAGE * 0.5f, SUPPLY_VOLTAGE * 0.5f);
             ESP_LOGI(TAG, "motor disabled (idle for %lld ms)", (long long)((now_us - s_last_active_us) / 1000));
         }
     }

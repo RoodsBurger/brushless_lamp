@@ -8,7 +8,7 @@
 
 constexpr uint32_t PWM_FREQ_HZ      = 25000;
 constexpr uint32_t FOC_ISR_HZ       = 1000;     // 1 kHz SVPWM — Arduino's proven-stable rate; higher rates starve Matter on the single-core C6
-constexpr uint32_t LED_PWM_FREQ_HZ  = 25000;
+constexpr uint32_t LED_PWM_FREQ_HZ  = 30000;   // 30 kHz instead of 25 kHz to decouple from motor MCPWM (also 25 kHz). Same-frequency PWM on the same chip can produce beat/visual flicker even on independent peripherals due to shared clock domain — pushing LED above motor frequency removes the interaction.
 constexpr uint8_t  LED_PWM_RES_BIT  = 10;
 constexpr uint16_t LED_PWM_MAX      = (1u << LED_PWM_RES_BIT) - 1;
 
@@ -23,15 +23,15 @@ constexpr float SUPPLY_VOLTAGE = 24.0f;
 
 constexpr float PHASE_RESISTANCE     = 5.0f;
 constexpr float KV_RATING            = 100.0f;  // true motor spec — 2.3.0 bug patched directly in BLDCMotor.cpp (see esp-idf/patches/)
-constexpr float CURRENT_LIMIT        = 0.5f;
-constexpr float VOLTAGE_SENSOR_ALIGN = 3.0f;
+constexpr float CURRENT_LIMIT        = 1.5f;   // 0.5 was M4 default but with phase_resistance=5 it caps PID-output voltage at 0.5×5=2.5 V (weak). 1.5 → 7.5 V max — strong enough for the lamp without unbounded wind-up.
+constexpr float VOLTAGE_SENSOR_ALIGN = 8.0f;   // user-confirmed 8 V is good for alignment consistency (3 V was too low and produced wrong-direction runs).
 constexpr float LPF_ANGLE_TF         = 0.0f;   // matches arduino-foc 2.4.0 which removed the shaft_angle LPF entirely (any Tf>0 adds phase lag that hurts tracking)
 
 constexpr float PID_VEL_P           = 0.2f;
-constexpr float PID_VEL_I           = 20.0f;
+constexpr float PID_VEL_I           = 20.0f;   // M4-proven value. Tested 4 (louder) and 40 (also louder); 20 is the sweet spot for our setup.
 constexpr float PID_VEL_D           = 0.0f;
 constexpr float PID_VEL_OUTPUT_RAMP = 1000.0f;
-constexpr float LPF_VEL_TF          = 0.02f;
+constexpr float LPF_VEL_TF          = 0.05f;   // bumped from 0.02 — smoother velocity feedback into PID, reduces high-frequency voltage corrections that show up as audible whine
 constexpr float PID_ANGLE_P         = 3.0f;
 constexpr float ACCEL_DEFAULT       = 20.0f;   // matches Arduino M4 — low enough to stay smooth, high enough that long seeks finish before STALL_TIMEOUT_MS
 constexpr int   MOTION_DOWNSAMPLE   = 5;        // Matches Arduino M4 exactly. With loopTask spinning at several kHz, move() body runs at ~400–2000 Hz — fast enough for smooth control, slow enough that the velocity estimator's dt isn't dominated by 1024-CPR quantization noise.
@@ -39,8 +39,8 @@ constexpr int   MOTION_DOWNSAMPLE   = 5;        // Matches Arduino M4 exactly. W
 constexpr uint32_t IDLE_DISABLE_MS = 300;
 constexpr float    IDLE_POS_THRESH = 0.2f;    // matches Arduino M4 — wider than the position loop's steady-state error so we don't chatter, narrow enough that we don't park visibly off-target
 
-constexpr float    STALL_VEL_THRESHOLD = 1.0f;   // single threshold for both "target wants to move" and "shaft is stuck". Real user grabs hold the rotor well under 1 rad/s; legitimate slow-tracking moves under load run at ≥2 rad/s. Earlier dynamic max(0.5, 0.2×|tvel|) was firing false stalls every time the motor merely struggled, aborting moves before completion.
-constexpr uint32_t STALL_TIMEOUT_MS    = 500;
+constexpr float    STALL_VEL_THRESHOLD = 5.0f;   // bumped from 2.5 — user reports stall still too hard to trigger. At 5.0, a grab that holds shaft below half the slowest preset (5 rad/s) fires; legitimate cruise tracks well above this even under load.
+constexpr uint32_t STALL_TIMEOUT_MS    = 250;    // ~quarter-second hold and we declare stall — half of M4's 500 ms; user reports the previous setting felt too slow to react.
 constexpr uint32_t STALL_WARMUP_MS     = 800;
 
 constexpr float POS_MIN       = 0.0f;
