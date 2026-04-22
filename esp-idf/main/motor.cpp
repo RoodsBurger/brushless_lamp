@@ -131,16 +131,18 @@ void motor_init_and_foc() {
     g_motor.linkDriver(&g_driver);
 
     // Intentionally NOT setting phase_resistance — that flips arduino-foc 2.3.0's voltage-mode
-    // behavior to match 2.4.0's: PID_velocity.limit becomes voltage_limit (~12V default) instead
-    // of current_limit (0.5A) and move() outputs voltage.q = current_sp directly instead of
-    // current_sp * R + bemf. Net effect: PID can drive up to ~12V instead of being capped at
-    // ~3V, which is the user-visible "torque is much weaker than M4 / motor-only" complaint.
-    // KV_rating still set so BEMF is computed for future reference; current_limit kept for any
-    // future current-mode controller.
+    // behavior to match 2.4.0's: PID_velocity.limit becomes voltage_limit instead of
+    // current_limit (0.5A) and move() outputs voltage.q = current_sp directly instead of
+    // current_sp * R + bemf. KV_rating still set; current_limit kept for any future
+    // current-mode controller.
     // g_motor.phase_resistance  = PHASE_RESISTANCE;
     g_motor.KV_rating            = KV_RATING;
     g_motor.current_limit        = CURRENT_LIMIT;
     g_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
+    // Leave motor.voltage_limit at SimpleFOC's DEF_POWER_SUPPLY=12 V default — user
+    // confirmed 12 V is enough torque for our loaded lamp and keeps the stall current
+    // comfortably below the motor's rating. Driver's own voltage_limit stays at 24 V so
+    // SVPWM has the full supply headroom for the 12 V swing.
     g_motor.controller           = MotionControlType::angle;
     g_motor.torque_controller    = TorqueControlType::voltage;
     g_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
@@ -256,15 +258,19 @@ void motor_tick() {
     // nothing else in this iteration touches the motor.
     reset_driver_step();
 
-    // Per-edge re-anchor (matches M4 .ino:780–788). Whenever the motor settles into the
-    // disabled state — whether from idle timeout or a stall halt — snap commanded/target
-    // to actual shaft position so subsequent user input is anchored to physical reality.
+    // Per-edge re-anchor on disable. Sync target/target_vel to actual shaft position so the
+    // trapezoid restarts cleanly from where the motor stopped. We deliberately do NOT touch
+    // g_commanded — that's user/Matter intent, and the loop order
+    //   input_poll() → motor_tick()
+    // means a Matter callback or knob press between disable and the next tick has already
+    // updated g_commanded BEFORE this anchor runs. Snapping commanded to shaft_angle here
+    // would silently drop that input and look like "motor randomly ignores Matter commands".
+    // Stall halt has its own explicit g_commanded snap (give-up semantics).
     static bool s_was_enabled = false;
     if (g_motor.enabled) {
         s_was_enabled = true;
     } else if (s_was_enabled && s_recover_state == RecoverState::Idle) {
         float a = g_motor.shaft_angle;
-        g_commanded.store(a);
         g_target.store(a);
         g_target_vel.store(0.0f);
         s_was_enabled = false;
@@ -276,10 +282,24 @@ void motor_tick() {
     float tgt  = g_target.load();
     float tvel = g_target_vel.load();
     bool ramping     = fabsf(cmd - tgt) > 1e-4f || fabsf(tvel) > 1e-4f;
-    // No `g_motor.enabled &&` qualifier — without a trapezoidal ramp, this is the only signal
-    // that wakes the motor when Matter (or a knob in the idle-anchored case) sets a fresh target.
-    bool pos_err_big = fabsf(tgt - g_motor.shaft_angle) > IDLE_POS_THRESH;
+    // Match M3b/M4 exactly: pos_err_big requires `g_motor.enabled`. Without this qualifier,
+    // every external shaft drift while disabled (gravity, user nudging, vibration) triggered
+    // pos_err_big → want_motion=true → motor woke up and held position. User-visible as
+    // "motor still has torque at idle". on_knob's `motor_is_enabled() ? cmd : shaft` anchor
+    // already handles the drift case for user input — pos_err_big needn't. Wake-from-idle
+    // still works through `ramping` (any new commanded value moves cmd ≠ tgt).
+    bool pos_err_big = g_motor.enabled && fabsf(tgt - g_motor.shaft_angle) > IDLE_POS_THRESH;
     bool want_motion = ramping || pos_err_big;
+
+    // Transition log so "motor never goes idle" can be debugged from serial.
+    static bool s_prev_want_motion = false;
+    if (want_motion != s_prev_want_motion) {
+        ESP_LOGI(TAG, "%s: cmd=%.2f ang=%.2f pos_err=%.2f tvel=%.2f",
+                 want_motion ? "wake" : "idle",
+                 (double)cmd, (double)g_motor.shaft_angle,
+                 (double)(tgt - g_motor.shaft_angle), (double)tvel);
+        s_prev_want_motion = want_motion;
+    }
 
     int64_t now_us = esp_timer_get_time();
 
@@ -293,18 +313,31 @@ void motor_tick() {
             s_stall_start_us = 0;
         }
         bool in_warmup = (now_us - s_enable_time_us) < ((int64_t)STALL_WARMUP_MS * 1000);
-        // Only consider stall when we're actively commanding motion (target_vel != 0). During natural
-        // end-of-move deceleration, target_vel ramps to 0 and shaft velocity briefly dips — not a stall.
-        bool actively_seeking = fabsf(tvel) > STALL_VEL_THRESHOLD;
+        // Simple, conservative stall criterion: target commanding motion (|tvel| > 1) AND
+        // shaft is essentially stopped (|shvel| < 1) AND there's real distance to cover
+        // (pos_err > 1 rad). Only a real hand-grab or jam keeps the shaft below 1 rad/s
+        // sustained for STALL_TIMEOUT_MS while target wants to move. Dynamic ratio-based
+        // threshold (Phase 6c) was triggering on heavy-load slow tracking and aborting
+        // legitimate moves.
+        bool actively_seeking  = fabsf(tvel) > STALL_VEL_THRESHOLD;
+        bool shaft_stuck       = fabsf(g_motor.shaft_velocity) < STALL_VEL_THRESHOLD;
+        bool pos_err_big_stall = fabsf(tgt - g_motor.shaft_angle) > 1.0f;
         if (in_warmup) {
             s_stall_start_us = 0;  // don't carry stall accumulation across the warmup boundary
-        } else if (actively_seeking && fabsf(g_motor.shaft_velocity) < STALL_VEL_THRESHOLD && pos_err_big) {
+        } else if (actively_seeking && shaft_stuck && pos_err_big_stall) {
             if (s_stall_start_us == 0) {
                 s_stall_start_us = now_us;
             } else if (now_us - s_stall_start_us > ((int64_t)STALL_TIMEOUT_MS * 1000)) {
                 ESP_LOGW(TAG, "stall at ang=%.2f seeking cmd=%.2f — halt",
                          (double)g_motor.shaft_angle, (double)cmd);
-                halt_motor();   // disable + flush PID; commanded snaps via per-edge anchor next tick
+                halt_motor();   // disable + flush PID
+                // Explicit "give up" — snap commanded/target to current shaft so we don't
+                // re-attempt the failing move on the next tick. User must send a fresh command
+                // (knob or Matter slider change) to wake the motor again.
+                float a = g_motor.shaft_angle;
+                g_commanded.store(a);
+                g_target.store(a);
+                g_target_vel.store(0.0f);
                 s_stall_start_us = 0;
                 s_stall_synced.store(true);   // app_driver will push the corrected position to Matter
             }
@@ -312,13 +345,15 @@ void motor_tick() {
             s_stall_start_us = 0;
         }
 
-        // Diagnostic: every 250 ms while we're commanding motion, dump the stall-decision inputs
-        // so a "tried to force a stall, didn't fire" failure is debuggable from serial.
+        // Diagnostic: dump stall-decision inputs periodically. Tight 100 ms cadence once
+        // the stall counter is accumulating so the timer ramp toward STALL_TIMEOUT_MS is
+        // visible. cmd added so we can correlate user intent with what the trapezoid is doing.
         static int64_t s_diag_last_us = 0;
-        if (now_us - s_diag_last_us > 250000) {
+        int64_t diag_interval = (s_stall_start_us != 0) ? 100000 : 250000;
+        if (now_us - s_diag_last_us > diag_interval) {
             s_diag_last_us = now_us;
-            ESP_LOGI(TAG, "diag: tgt=%.2f ang=%.2f tvel=%.2f shvel=%.2f pos_err=%.2f warmup=%d stall_acc=%lldms",
-                     (double)tgt, (double)g_motor.shaft_angle,
+            ESP_LOGI(TAG, "diag: cmd=%.2f tgt=%.2f ang=%.2f tvel=%.2f shvel=%.2f pos_err=%.2f warmup=%d stall_acc=%lldms",
+                     (double)cmd, (double)tgt, (double)g_motor.shaft_angle,
                      (double)tvel, (double)g_motor.shaft_velocity,
                      (double)(tgt - g_motor.shaft_angle), (int)in_warmup,
                      s_stall_start_us ? (long long)((now_us - s_stall_start_us) / 1000) : 0LL);
@@ -326,7 +361,12 @@ void motor_tick() {
     } else {
         s_stall_start_us = 0;
         if (g_motor.enabled && now_us - s_last_active_us > ((int64_t)IDLE_DISABLE_MS * 1000)) {
+            // Match Arduino M4: just motor.disable() — that stops SVPWM output, leaving the
+            // motor in SimpleFOC's default low-current state. DRV8313 EN pins are hardwired
+            // high on our board so we can't tri-state from software; nSLEEP pulse is only
+            // for fault recovery, not idle.
             g_motor.disable();
+            ESP_LOGI(TAG, "motor disabled (idle for %lld ms)", (long long)((now_us - s_last_active_us) / 1000));
         }
     }
 

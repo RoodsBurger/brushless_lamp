@@ -1,6 +1,7 @@
-// Tunables — mirrors arduino sketch's final Matter-tuned constexpr block (commit 584deba).
-// Do NOT scale POS_MAX up "to match CylinderLamp steps" — the whole range is travelled on
-// every Matter brightness slider drag, so bigger POS_MAX = longer seek = stall timeouts.
+// Tunables — mirrors arduino sketch (commit 584deba) including the CylinderLamp-equivalent
+// 2258 rad full-travel range. A full Matter slider drag at top preset (30 rad/s) takes
+// ~75 s — accepted tradeoff for matching CylinderLamp's range. Earlier shrunken POS_MAX=60
+// was dropped per user request (Phase 6e).
 #pragma once
 
 #include <stdint.h>
@@ -38,25 +39,24 @@ constexpr int   MOTION_DOWNSAMPLE   = 5;        // Matches Arduino M4 exactly. W
 constexpr uint32_t IDLE_DISABLE_MS = 300;
 constexpr float    IDLE_POS_THRESH = 0.2f;    // matches Arduino M4 — wider than the position loop's steady-state error so we don't chatter, narrow enough that we don't park visibly off-target
 
-constexpr float    STALL_VEL_THRESHOLD = 0.2f;
+constexpr float    STALL_VEL_THRESHOLD = 1.0f;   // single threshold for both "target wants to move" and "shaft is stuck". Real user grabs hold the rotor well under 1 rad/s; legitimate slow-tracking moves under load run at ≥2 rad/s. Earlier dynamic max(0.5, 0.2×|tvel|) was firing false stalls every time the motor merely struggled, aborting moves before completion.
 constexpr uint32_t STALL_TIMEOUT_MS    = 500;
 constexpr uint32_t STALL_WARMUP_MS     = 800;
 
 constexpr float POS_MIN       = 0.0f;
-constexpr float POS_MAX       = 60.0f;          // ~9.5 shaft revolutions — CylinderLamp-equivalent travel range
-constexpr float RAD_PER_CLICK = 1.5f;           // 40 knob detents across full travel (matches CylinderLamp click-to-range feel: MAX_STEPS/STEPS_PER_CLICK = 1,150,000/28,750 = 40)
+constexpr float POS_MAX       = 2258.0f;        // matches CylinderLamp's stepper range (MAX_STEPS=1,150,000 ÷ 16 microsteps × NEMA-14 0.0025 rad/step = 2258 rad ≈ 359 motor revs); same as Arduino M4
+constexpr float RAD_PER_CLICK = 56.5f;          // 40 knob detents across full travel (matches CylinderLamp feel: MAX_STEPS/STEPS_PER_CLICK = 1,150,000/28,750 = 40)
 
 constexpr uint32_t BTN_DEBOUNCE_MS   = 30;
 constexpr uint32_t BTN_DBL_GAP_MS    = 400;
 constexpr uint32_t BTN_LONG_WARN_MS  = 5000;
 constexpr uint32_t BTN_LONG_RESET_MS = 9000;
 
-// Spread tuned for perceivable difference: at POS_MAX=30 and ACCEL=25, slowest preset
-// reaches ~1.8 s end-to-end, fastest reaches ~1.1 s. 2× spread max→min is about as
-// much as the encoder's edge-rate can handle without dropping counts at peak speed.
-constexpr float   VELOCITY_PRESETS[] = {10.0f, 18.0f, 28.0f, 40.0f};
+// Matches Arduino M4 exactly. Full travel at top preset (30 rad/s) takes ~75 s —
+// long for a Matter slider drag but maps cleanly to the CylinderLamp-derived POS_MAX.
+constexpr float   VELOCITY_PRESETS[] = {5.0f, 10.0f, 20.0f, 30.0f};
 constexpr uint8_t VELOCITY_PRESET_N  = sizeof(VELOCITY_PRESETS) / sizeof(VELOCITY_PRESETS[0]);
-constexpr uint8_t DEFAULT_SPEED_IDX  = 1;       // 18 rad/s
+constexpr uint8_t DEFAULT_SPEED_IDX  = 1;       // 10 rad/s
 
 constexpr uint16_t MATTER_CT_WARM = 500;        // mireds
 constexpr uint16_t MATTER_CT_COOL = 100;

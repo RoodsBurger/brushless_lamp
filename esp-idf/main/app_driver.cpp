@@ -241,10 +241,12 @@ static void push_to_matter_impl(uint16_t endpoint_id) {
 
 void app_driver_push_to_matter(uint16_t endpoint_id) {
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) return;
-    // 1 s rate-limit so fast knob spins don't flood CHIP with attribute writes.
+    // 500 ms rate-limit — trades off responsiveness (Google Home sees knob changes within
+    // half a second) against CHIP attribute-write load. Prior 1 s felt laggy; 250 ms or
+    // lower can flood CHIP during fast knob spins.
     static int64_t s_last_push_us = 0;
     int64_t now_us = esp_timer_get_time();
-    if (s_last_push_us != 0 && (now_us - s_last_push_us) < 1000000) return;
+    if (s_last_push_us != 0 && (now_us - s_last_push_us) < 500000) return;
     s_last_push_us = now_us;
     push_to_matter_impl(endpoint_id);
 }

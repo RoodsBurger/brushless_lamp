@@ -1,6 +1,12 @@
 dependencies:
   idf: ">=5.4.1,<5.5"
-  espressif/esp_simplefoc: "^1.2.3"
+  # Local override of espressif/esp_simplefoc 1.2.3. Same source as the registry-installed
+  # component, patched to bump _PWM_FREQUENCY from 20 kHz (audible to younger ears) to
+  # 25 kHz (matches Arduino M4, inaudible). Upstream's BLDCDriver3PWM ignores the user-set
+  # pwm_frequency member and uses this macro for the MCPWM period_ticks calculation.
+  espressif/esp_simplefoc:
+    version: "*"
+    override_path: "../components/espressif__esp_simplefoc"
   # Local override of espressif/arduino-foc 2.3.0~3. Same source as the registry-installed
   # component, patched with 2.4.0's KV_rating fix (BLDCMotor.cpp constructor: `_KV*_SQRT2`
   # → `_KV`). This recovers the ~1.4× torque Arduino M1-M3 gets from upstream 2.4.0.

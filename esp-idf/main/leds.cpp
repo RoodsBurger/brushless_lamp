@@ -26,6 +26,7 @@ static std::atomic<uint8_t> s_cct{50};
 static float s_effective_bri  = 50.0f;
 static float s_effective_cct  = 50.0f;
 static float s_effective_fade = 0.0f;
+static float s_shaft_angle    = 0.0f;   // latest shaft_angle from motor_tick; read in update_ramp hysteresis
 static int64_t s_last_ramp_us = 0;
 static uint16_t s_last_duty_ww = 0xFFFF;
 static uint16_t s_last_duty_cw = 0xFFFF;
@@ -70,7 +71,7 @@ void leds_set_cct(uint8_t cct) {
 uint8_t leds_get_brightness() { return s_brightness.load(); }
 uint8_t leds_get_cct()        { return s_cct.load(); }
 
-static void update_ramp(float shaft_angle) {
+static void update_ramp() {
     int64_t now_us = esp_timer_get_time();
     if (s_last_ramp_us == 0) { s_last_ramp_us = now_us; return; }
     int64_t dt_us = now_us - s_last_ramp_us;
@@ -88,7 +89,20 @@ static void update_ramp(float shaft_angle) {
     else if (s_effective_cct > tc + step) s_effective_cct -= step;
     else                                   s_effective_cct  = tc;
 
-    float target_fade = (shaft_angle > LEDS_OFF_THRESH) ? 1.0f : 0.0f;
+    // Lamp on/off keys off raw shaft_angle (NOT abs) so any overshoot past 0 (negative
+    // shaft) counts as off. Wide hysteresis (0.5 ON / 0.05 OFF) so the lamp only goes
+    // dark when the shaft has truly settled at zero — was previously 0.2, which the
+    // user observed turning off whenever the motor parked in the 0.2-0.5 region.
+    static bool s_lamp_on = false;
+    if      (!s_lamp_on && s_shaft_angle > LEDS_OFF_THRESH) s_lamp_on = true;
+    else if ( s_lamp_on && s_shaft_angle < 0.05f)           s_lamp_on = false;
+    static bool s_logged_state = false;
+    if (s_lamp_on != s_logged_state) {
+        ESP_LOGI(TAG, "lamp %s (shaft=%.2f)", s_lamp_on ? "ON" : "OFF", (double)s_shaft_angle);
+        s_logged_state = s_lamp_on;
+    }
+    float target_fade = s_lamp_on ? 1.0f : 0.0f;
+
     float fade_step = LED_FADE_PER_SEC * dt_s;
     if      (s_effective_fade < target_fade - fade_step) s_effective_fade += fade_step;
     else if (s_effective_fade > target_fade + fade_step) s_effective_fade -= fade_step;
@@ -109,10 +123,12 @@ static inline void write_pwm(uint16_t want_ww, uint16_t want_cw) {
 }
 
 void leds_update(float shaft_angle) {
-    update_ramp(shaft_angle);
+    s_shaft_angle = shaft_angle;
+    update_ramp();
 
-    // Time-based fade at the threshold — LEDs ramp 0↔1 over ~250 ms when shaft crosses the
-    // position threshold. Once faded to 1, position changes don't affect brightness.
+    // Time-based fade keyed off commanded (see update_ramp): LEDs ramp 0↔1 over ~250 ms
+    // when the user's intent crosses the threshold; once faded to 1, position changes
+    // don't affect brightness.
     uint32_t base = (uint32_t)((s_effective_bri * (float)LED_PWM_MAX / 100.0f) * s_effective_fade);
     uint32_t ecct = (uint32_t)(s_effective_cct + 0.5f);
     uint16_t want_ww = (uint16_t)((base * (100 - ecct)) / 100);
