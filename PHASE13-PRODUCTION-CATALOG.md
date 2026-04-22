@@ -308,6 +308,39 @@ index 113f426a..f12923f2 100644
 2.48.1
 ```
 
+## 3.1 chip dependency-pin relaxations (REQUIRED when building arduino-as-component + esp-matter)
+
+**Why**: `arduino-esp32` 3.3.8 pulls `espressif/esp_insights` pinned to **exactly 1.2.2** and transitively `espressif/esp_rcp_update ~1.2.0` (via RainMaker). Stock `chip/config/esp32/components/chip/idf_component.yml` in esp-matter release/v1.5 requires `esp_insights ^1.2.4` and `esp_rcp_update ~1.3.0` — neither overlaps, and IDF Component Manager cannot resolve. Top-level overrides in `main/idf_component.yml` don't break the tie because transitive deps hoist to the same level.
+
+**What chip actually uses**: a `grep` of `connectedhomeip/src/` for `esp_insights` / `esp_rcp_update` shows zero source references — both are manifest-only deps. Safe to downgrade the version pins; no runtime behavior changes.
+
+**Fix**: relax the two version pins in chip's manifest to match arduino-esp32's transitive requirements.
+
+```sh
+sed -i '' 's|version: "\^1.2.4"|version: "1.2.2"|' \
+  ~/esp/esp-matter/connectedhomeip/connectedhomeip/config/esp32/components/chip/idf_component.yml
+sed -i '' 's|version: "~1.3.0"|version: "~1.2.0"|' \
+  ~/esp/esp-matter/connectedhomeip/connectedhomeip/config/esp32/components/chip/idf_component.yml
+```
+
+**Re-apply** after any `git submodule update` of connectedhomeip or esp-matter reinstall, same as PR#42320.
+
+**Resulting manifest block** (the two modified entries):
+
+```yaml
+    espressif/esp_insights:
+        version: "1.2.2"
+        require: public
+        rules:
+            - if: "idf_version >=5.0"
+            - if: "target != esp32h2"
+
+    espressif/esp_rcp_update:
+        version: "~1.2.0"
+        rules:
+            - if: "idf_version >=5.0"
+```
+
 ## 4. partitions.csv (production layout)
 
 ```csv

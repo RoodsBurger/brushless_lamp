@@ -1,7 +1,7 @@
-// Phase 14a — arduino-as-component + SimpleFOC v2.4.0 on native ESP-IDF, no Matter.
-// We own app_main directly (CONFIG_AUTOSTART_ARDUINO=n). initArduino() brings up the
-// Arduino runtime (millis/micros, Serial via USB-CDC, attachInterrupt, etc.) without
-// starting Arduino's setup()/loop() — SimpleFOC's loopFOC() runs in our own motor task.
+// Phase 14c — arduino-as-component + SimpleFOC v2.4.0 + esp-matter on native ESP-IDF.
+// We own app_main (CONFIG_AUTOSTART_ARDUINO=n). initArduino() brings up the Arduino
+// runtime without starting setup()/loop(); the motor FOC runs in motor_foc_task and
+// Matter runs in the CHIP task started by esp_matter::start().
 
 #include <Arduino.h>
 #include <esp_log.h>
@@ -12,6 +12,7 @@
 #include "motor.h"
 #include "input.h"
 #include "leds.h"
+#include "matter_app.h"
 
 static const char *TAG = "app";
 
@@ -27,18 +28,18 @@ extern "C" void app_main() {
 
     // IDF printf routes to USB_SERIAL_JTAG here (arduino-esp32 3.3.8 defaults Serial to
     // UART0 on C6, which on our board is the nSLEEP pin and goes nowhere).
-    printf("\n=== BrushlessLamp Phase 14b: motor + LEDs (no Matter) ===\n");
+    printf("\n=== BrushlessLamp Phase 14c: motor + LEDs + Matter ===\n");
 
     input_init();
     motor_init_and_start();
     input_task_start();
-    // LEDs are init'd AFTER motor and the angle follower runs at 2 Hz with binary
-    // on/off — a 30 Hz sinf() task on the FPU-less C6 starved the FOC loop enough to
-    // drop torque; 14c's Matter slider will write LED duty < 1 Hz anyway.
+    // LEDs init after MCPWM is up; the angle follower (10 Hz) drives on/off from the
+    // live shaft angle + Matter's current ColorTemperature attribute.
     leds_init();
+    matter_app_init();
     leds_start_angle_follower();
 
-    printf("Ready. Rotate knob to set target velocity (+/-3 rad/s per detent). Press button to stop.\n");
+    printf("Ready. Knob = +/-1 rad per detent. Matter slider = 0..ANGLE_MAX. Hold button 5s to factory reset.\n");
 
     vTaskDelete(nullptr);
 }

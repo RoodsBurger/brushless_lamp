@@ -2,15 +2,24 @@
 // Knob ISR counts one delta per full detent (quadrature Gray-code state machine on CW-only
 // transitions). A low-priority FreeRTOS task drains the delta into motor_set_target_velocity
 // so the ISR stays pure and we don't block the FOC inner loop when the knob turns.
+//
+// Phase 14c adds a 5 s button-hold detector that triggers an esp_matter factory reset
+// (wipes the Matter fabric/KVS partitions and reboots). Short clicks still stop motion.
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_log.h>
+#include <esp_matter.h>
 
 #include "input.h"
 #include "motor.h"
+#include "matter_app.h"
 #include "config.h"
 #include "pins.h"
+
+static constexpr uint32_t BTN_FACTORY_RESET_MS = 5000;  // hold this long → factory reset
+static const char *TAG_BTN = "input";
 
 static volatile int32_t  s_knob_delta = 0;
 static volatile uint8_t  s_knob_prev  = 0;
@@ -41,6 +50,9 @@ static bool buttonPressed() {
     return false;
 }
 
+// Track how long the button has been held. Reset to 0 on release.
+static uint32_t s_btn_press_start = 0;
+
 static void input_task(void *) {
     while (true) {
         int32_t delta;
@@ -50,16 +62,31 @@ static void input_task(void *) {
         portENABLE_INTERRUPTS();
 
         if (delta) {
-            float t = motor_get_target_velocity() + (float)delta * KNOB_STEP_RAD_PER_SEC;
-            motor_set_target_velocity(t);
-            // printf (IDF stdout → USB_SERIAL_JTAG) instead of Serial.printf — see motor.cpp.
-            printf("knob %+ld -> target=%.2f rad/s\n",
-                   (long)delta, motor_get_target_velocity());
+            motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
+            motor_enable();   // any knob activity implies "I want the lamp moving"
+            // Push the new target back to Matter so the controller app's slider
+            // follows the knob instead of showing a stale value.
+            matter_push_level_from_angle(motor_get_target_angle());
+            printf("knob %+ld -> target=%.2f rad\n",
+                   (long)delta, motor_get_target_angle());
         }
 
         if (buttonPressed()) {
-            motor_stop();
-            printf("button -- target=0\n");
+            motor_set_target_angle(0.0f);
+            printf("button -- target=0 rad\n");
+        }
+
+        // Long-press → factory reset: wipe Matter fabric/KVS and reboot. Useful when
+        // commissioning gets wedged (stale fabric state, failed prior attempts, etc.).
+        bool held = (digitalRead(PIN_BTN) == LOW);
+        if (held) {
+            if (s_btn_press_start == 0) s_btn_press_start = millis();
+            else if (millis() - s_btn_press_start > BTN_FACTORY_RESET_MS) {
+                ESP_LOGW(TAG_BTN, "button held %lu ms -> factory reset", (unsigned long)BTN_FACTORY_RESET_MS);
+                esp_matter::factory_reset();  // erases Matter NVS + reboots
+            }
+        } else {
+            s_btn_press_start = 0;
         }
 
         // 10 ms poll — matches the Arduino button period and leaves 99 %+ of the CPU for FOC.
