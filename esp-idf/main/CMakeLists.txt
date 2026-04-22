@@ -3,6 +3,7 @@ idf_component_register(
         "main.cpp"
         "motor.cpp"
         "input.cpp"
+        "leds.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         arduino-esp32
