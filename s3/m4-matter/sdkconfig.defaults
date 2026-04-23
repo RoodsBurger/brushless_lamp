@@ -13,12 +13,58 @@ CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=n
 CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n
 
-## IPv6 for Matter operational routing.
+## IPv6 for Matter operational routing. NUM_ADDRESSES bumped to 8 so we have
+## room for link-local + SLAAC ULA + one unique-local-address per fabric plus
+## a couple of transient addresses during commissioning; 6 is tight on Google
+## Home's Nest hub which occasionally stashes a stale address and retries
+## against it during post-commission subscription.
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
 CONFIG_LWIP_HOOK_IP6_ROUTE_DEFAULT=y
 CONFIG_LWIP_HOOK_ND6_GET_GW_DEFAULT=y
-CONFIG_LWIP_IPV6_NUM_ADDRESSES=6
+CONFIG_LWIP_IPV6_NUM_ADDRESSES=8
 CONFIG_MBEDTLS_HKDF_C=y
+
+## Post-commission subscription reliability. The IM:ReportData retransmit
+## failures we hit during Google-Home commissioning are usually the controller
+## subscribing to every attribute at once and saturating the default handler /
+## subscription buffers. Doubling both gives comfortable headroom for a
+## single-endpoint ColorTemperatureLight.
+CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=4
+CONFIG_MAX_CHIP_SUBSCRIPTIONS=4
+
+## CHIP task priority bumped 1 above the IDF default so MRP retransmits
+## dispatch quickly during a commissioning burst. Still stays below LwIP (18)
+## and the WiFi task (23). Stack extended for the subscribe-all ReadHandler
+## fan-out, and the long-dispatch threshold surfaces any slow callbacks.
+CONFIG_CHIP_TASK_PRIORITY=2
+CONFIG_CHIP_TASK_STACK_SIZE=10240
+CONFIG_DISPATCH_EVENT_LONG_DISPATCH_TIME_WARNING_THRESHOLD_MS=200
+
+## Matter Reliable Messaging retransmits tuned for the Nest hub's ~5 s exchange
+## ceiling. Six retries (up from four) fit cleanly inside that window with the
+## 100 ms sender-side boost per retry — enough slack to ride out a single
+## dropped packet during post-commission subscription without the controller
+## bailing.
+CONFIG_MRP_MAX_RETRANS=6
+CONFIG_MRP_RETRY_INTERVAL_SENDER_BOOST_FOR_WIFI_ETHERNET=100
+
+## Extra ND6 queue capacity during commissioning's multi-address dance.
+CONFIG_LWIP_IPV6_MEMP_NUM_ND6_QUEUE=5
+
+## WiFi reliability during commissioning. The default RX buffer sizing +
+## block-ack window are tuned for idle scenarios; Matter's BLE→WiFi handover
+## + immediate operational mDNS burst pushes the defaults into occasional
+## packet loss that looks like "Msg Retransmission failure (max retries:4)"
+## in the CHIP log. These values match the esp-matter light example's
+## production tuning.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+
+## NIMBLE controller memory is released after commissioning to free ~30 KB
+## back to the app heap; also lets Google Home's post-commission burst not
+## contend with a suspended BLE stack.
+CONFIG_BT_NIMBLE_MEM_OPTIMIZATION=y
 
 ## One dynamic endpoint (ColorTemperatureLight) is all we need for now.
 CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=2
