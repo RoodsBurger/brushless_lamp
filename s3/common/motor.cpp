@@ -18,11 +18,20 @@
 #include <SimpleFOC.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_task_wdt.h>
 #include <math.h>
 
 #include "motor.h"
 #include "config.h"
 #include "pins.h"
+
+// Target FOC period. On C6 softfloat each loopFOC naturally took ~200 µs (→ ~5 kHz)
+// and that was the silent M2-knob baseline. On S3's FPU a loopFOC is ~20 µs, so we
+// busy-wait on micros() between iterations to hold the same 200 µs period jitter-
+// free (no FreeRTOS tick granularity). This is the same cadence the Arduino
+// reference ran at organically — exposed explicitly here because we have the CPU
+// headroom to run faster and would otherwise.
+static constexpr uint32_t FOC_PERIOD_US = 200;
 
 static BLDCMotor       s_motor  (POLE_PAIRS);
 static BLDCDriver3PWM  s_driver (PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
@@ -33,6 +42,13 @@ static volatile float  s_shaft_angle_cached    = 0.0f;
 static volatile float  s_shaft_velocity_cached = 0.0f;
 static volatile bool   s_sync_pending  = false;
 static void          (*s_settle_cb)(float) = nullptr;
+
+// Manual velocity override — M1's audibility test uses this to drive the motor at
+// precise constant speeds, bypassing the position loop and its accel ramp. The
+// position loop is skipped whenever s_manual_mode is true; a zero manual velocity
+// explicitly clears the flag.
+static volatile float  s_manual_vel    = 0.0f;
+static volatile bool   s_manual_mode   = false;
 
 static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
 static void IRAM_ATTR doMotorB() { s_encoder.handleB(); }
@@ -103,14 +119,84 @@ static void motor_foc_task(void *) {
     uint32_t last_print_ms = 0;
     uint32_t last_active_ms = 0;
     uint32_t iter          = 0;
+    uint32_t next_foc_us   = micros();
+
+    // On a dedicated core the motor task would starve IDLE and trip the IDLE
+    // watchdog — don't check IDLE on this core. We still yield periodically via
+    // the busy-wait fallback below, so the RTOS stays healthy.
+    esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR));
 
     while (true) {
+        // Busy-wait until next 200 µs boundary. Matches Arduino M2's naturally-~5 kHz
+        // softfloat loop rate, jitter-free below the FreeRTOS tick. Any spare time
+        // after the iteration is spent in the wait — IDLE on this core won't run
+        // (handled by the task_wdt_delete above), but the OTHER core isn't blocked.
         uint32_t now_us = micros();
+        while ((int32_t)(now_us - next_foc_us) < 0) {
+            now_us = micros();
+        }
+        next_foc_us += FOC_PERIOD_US;
+        // If we're falling behind (took > FOC_PERIOD_US of processing), skip forward
+        // so we don't try to "catch up" with a bunch of rapid-fire iterations.
+        if ((int32_t)(now_us - next_foc_us) > (int32_t)(2 * FOC_PERIOD_US)) {
+            next_foc_us = now_us + FOC_PERIOD_US;
+        }
         if (prev_loop_us != 0) {
             uint32_t d = now_us - prev_loop_us;
             if (d > max_loop_us) max_loop_us = d;
         }
         prev_loop_us = now_us;
+
+        // Manual-velocity mode — keeps the same trapezoidal ramp (MOTION_ACCEL) as the
+        // production position loop, but takes the target velocity directly from the
+        // app instead of deriving it from pos_err. Motor still idle-disables when
+        // commanded_vel + shaft_velocity both hit zero, so exiting by calling
+        // motor_run_at_velocity(0.0f) decelerates cleanly and then cuts PWM.
+        if (s_manual_mode || (s_manual_vel == 0.0f && fabsf(commanded_vel) > VEL_AT_REST_EPS)) {
+            float dt_m = (last_ramp_us == 0) ? 0.0f : (now_us - last_ramp_us) * 1e-6f;
+            last_ramp_us = now_us;
+            if (dt_m > 0.0f && dt_m < 0.1f) {
+                float step = MOTION_ACCEL * dt_m;
+                if      (commanded_vel <  s_manual_vel - step) commanded_vel += step;
+                else if (commanded_vel >  s_manual_vel + step) commanded_vel -= step;
+                else                                           commanded_vel  = s_manual_vel;
+            } else {
+                commanded_vel = s_manual_vel;
+            }
+
+            bool at_rest_m = fabsf(commanded_vel) < VEL_AT_REST_EPS &&
+                             fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS;
+            if (!at_rest_m) last_active_ms = millis();
+            bool live = (millis() - last_active_ms) < IDLE_DISABLE_MS;
+
+            if (live) {
+                if (!s_motor.enabled) s_motor.enable();
+                s_motor.loopFOC();
+                s_motor.move(commanded_vel);
+            } else if (s_motor.enabled) {
+                s_motor.disable();
+                s_motor.PID_velocity.reset();
+                s_motor.shaft_velocity = 0.0f;
+                commanded_vel = 0.0f;
+            }
+
+            s_shaft_angle_cached    = s_motor.shaft_angle;
+            s_shaft_velocity_cached = s_motor.shaft_velocity;
+
+            if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
+                last_print_ms = millis();
+                printf("[motor] manual target:%ld.%02ld cmd:%ld.%02ld shaft_vel:%ld.%02ld ang:%ld.%02ld en:%d maxLp:%luus\n",
+                       FX_HI(s_manual_vel,            100), FX_LO(s_manual_vel,            100),
+                       FX_HI(commanded_vel,           100), FX_LO(commanded_vel,           100),
+                       FX_HI(s_motor.shaft_velocity,  100), FX_LO(s_motor.shaft_velocity,  100),
+                       FX_HI(s_motor.shaft_angle,     100), FX_LO(s_motor.shaft_angle,     100),
+                       (int)s_motor.enabled,
+                       (unsigned long)max_loop_us);
+                max_loop_us = 0;
+            }
+            ++iter;
+            continue;
+        }
 
         float pos_err = s_target_angle - s_motor.shaft_angle;
 
@@ -183,10 +269,7 @@ static void motor_foc_task(void *) {
             max_loop_us = 0;
         }
 
-        // Yield one tick every 32 iters so IDLE on CORE_MOTOR gets scheduled and the
-        // IDLE watchdog stays fed. At ~1 ms/iter that's ~32 ms between yields — well
-        // under the 5 s IDLE-WDT timeout.
-        if ((++iter & 0x1F) == 0) vTaskDelay(1);
+        ++iter;
     }
 }
 
@@ -199,6 +282,18 @@ void motor_set_target_angle(float rad)     { s_target_angle = clamp_angle(rad); 
 void motor_nudge_target_angle(float d_rad) { s_target_angle = clamp_angle(s_target_angle + d_rad); }
 void motor_request_matter_sync_on_settle() { s_sync_pending = true; }
 void motor_set_settle_callback(void (*cb)(float)) { s_settle_cb = cb; }
+
+void motor_run_at_velocity(float rad_per_sec) {
+    if (rad_per_sec == 0.0f) {
+        s_manual_mode = false;
+        s_manual_vel  = 0.0f;
+        // Don't call disable here — the position loop's idle-disable will pick up
+        // on the new at_rest state and cut PWM cleanly on its next tick.
+    } else {
+        s_manual_vel  = rad_per_sec;
+        s_manual_mode = true;
+    }
+}
 
 float motor_get_target_angle()   { return s_target_angle; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }

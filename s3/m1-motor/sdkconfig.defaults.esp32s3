@@ -9,11 +9,10 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 ## 8 MB flash on XIAO S3. M1 doesn't need OTA, but flash-size must match real hw.
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 
-## Quad PSRAM — not critical for motor-only, but cheap to enable and useful for
-## consistency with later stages where Matter will want it.
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_QUAD=y
-CONFIG_SPIRAM_SPEED_80M=y
+## PSRAM disabled for M1 — motor-only doesn't need the extra RAM, and the exact
+## XIAO S3 variant has Octal PSRAM (ESP32-S3R8) that requires CONFIG_SPIRAM_MODE_OCT=y.
+## M4 may re-enable once we've confirmed the mode matches the silkscreened module.
+# CONFIG_SPIRAM is not set
 
 ## No BT, no WiFi — purely motor bring-up.
 CONFIG_BT_ENABLED=n

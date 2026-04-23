@@ -6,7 +6,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         arduino-esp32
-        brushlesslamp_core
+        common
         nvs_flash
         esp_driver_ledc
 )

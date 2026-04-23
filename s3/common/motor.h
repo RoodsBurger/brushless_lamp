@@ -27,3 +27,9 @@ void  motor_set_settle_callback(void (*cb)(float angle_rad));
 // push. Without the arm flag, motor.cpp doesn't invoke the callback — this keeps
 // Matter-slider-initiated moves from bouncing back through the callback path.
 void  motor_request_matter_sync_on_settle();
+
+// Direct-velocity mode — bypasses the position loop and drives SimpleFOC's velocity
+// target directly at rad_per_sec. Used by m1-motor for audibility tests at precise
+// constant speeds (the position loop caps at MOTION_VELOCITY and ramps). Pass 0.0f
+// to exit and return to position control + idle-disable.
+void  motor_run_at_velocity(float rad_per_sec);

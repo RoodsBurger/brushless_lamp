@@ -8,7 +8,7 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "$ENV{ESP_MATTER_PATH}/examples/common/utils"
     REQUIRES
         arduino-esp32
-        brushlesslamp_core
+        common
         nvs_flash
         esp_driver_ledc
         chip
