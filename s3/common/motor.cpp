@@ -19,11 +19,24 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_task_wdt.h>
+#include <nvs.h>
 #include <math.h>
 
 #include "motor.h"
 #include "config.h"
 #include "pins.h"
+
+// NVS namespace for motor calibration. We cache *only* sensor_direction here —
+// NOT zero_electric_angle. Reason: our MT6701 is wired in quadrature/incremental
+// mode, so sensor->getMechanicalAngle() starts at 0 on every boot regardless of
+// where the rotor physically sits. That makes a cached zero_electric_angle from
+// a prior boot meaningless (electrical angle ends up pointing Uq in the wrong
+// direction → no torque). sensor_direction, however, is a physical property of
+// the rotor magnets vs the encoder and stays valid across reboots. Caching it
+// skips the 1000-step forward/reverse rotation sweep at boot — the audibly loud
+// part of initFOC — and leaves only the brief 700 ms zero-angle hold.
+static constexpr const char *NVS_NS            = "foc_cal";
+static constexpr const char *NVS_KEY_DIRECTION = "dir";
 
 // Target FOC period. On C6 softfloat each loopFOC naturally took ~200 µs (→ ~5 kHz)
 // and that was the silent M2-knob baseline. On S3's FPU a loopFOC is ~20 µs, so we
@@ -111,10 +124,38 @@ static void motor_foc_task(void *) {
 
     printf("[motor] motor.init()=%d\n", s_motor.init());
 
+    // Load persisted sensor_direction (safe-to-cache across boots since it's a
+    // property of the rotor vs encoder, not of absolute position).
+    int8_t  saved_dir = 0;
+    {
+        nvs_handle_t h;
+        if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+            nvs_get_i8(h, NVS_KEY_DIRECTION, &saved_dir);
+            nvs_close(h);
+        }
+    }
+    if (saved_dir == (int8_t)Direction::CW || saved_dir == (int8_t)Direction::CCW) {
+        s_motor.sensor_direction = (Direction)saved_dir;
+        printf("[motor] cached sensor_direction=%d (skipping direction sweep)\n", (int)saved_dir);
+    }
+
     int foc_ok = s_motor.initFOC();
     printf("[motor] initFOC()=%d zero_elec=%.4f dir=%d core=%d\n",
            foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction, xPortGetCoreID());
-    if (!foc_ok) printf("[motor] FOC init FAILED\n");
+    if (!foc_ok) {
+        printf("[motor] FOC init FAILED\n");
+    } else if (saved_dir == 0 &&
+               (s_motor.sensor_direction == Direction::CW || s_motor.sensor_direction == Direction::CCW)) {
+        // First successful alignment — stash the direction so future boots skip the sweep.
+        nvs_handle_t h;
+        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            int8_t d = (int8_t)s_motor.sensor_direction;
+            nvs_set_i8(h, NVS_KEY_DIRECTION, d);
+            nvs_commit(h);
+            nvs_close(h);
+            printf("[motor] sensor_direction=%d saved to NVS\n", (int)d);
+        }
+    }
 
     s_motor.disable();   // boot idle — first target change wakes it
 
@@ -126,6 +167,14 @@ static void motor_foc_task(void *) {
     uint32_t last_active_ms = 0;
     uint32_t iter          = 0;
     uint32_t next_foc_us   = micros();
+
+    // Stall detection state. On stall: stop the motor, idle-disable, and push the
+    // current position to Matter. No latching — the next target change (knob or
+    // slider) is free to command motion; if the mechanical block is still there,
+    // another stall will fire. This matches the user's requested "just stop" feel
+    // instead of the soft-stall blocked-direction gate we tried previously.
+    uint32_t motion_started_ms = 0;
+    uint32_t stuck_since_ms    = 0;
 
     // On a dedicated core the motor task would starve IDLE and trip the IDLE
     // watchdog — don't check IDLE on this core. We still yield periodically via
@@ -234,6 +283,37 @@ static void motor_foc_task(void *) {
             else                                          commanded_vel  = desired_vel;
         } else {
             commanded_vel = desired_vel;
+        }
+
+        // Stall detection: trying to move but shaft not following for long enough
+        // → declare stall. Response is minimal: zero the drive, snap the internal
+        // target to the current shaft so pos_err=0 and the motor idle-disables on
+        // the next at_rest check, and push the clamped position to Matter so the
+        // controller-side slider mirrors reality. If the user commands another
+        // move afterwards and the block is still there, another stall will fire.
+        bool trying_to_move = fabsf(commanded_vel) > STALL_VEL_EPS;
+        if (trying_to_move) {
+            uint32_t now_ms = millis();
+            if (motion_started_ms == 0) motion_started_ms = now_ms;
+            bool past_warmup  = (now_ms - motion_started_ms) > STALL_WARMUP_MS;
+            bool shaft_frozen = fabsf(s_motor.shaft_velocity) < STALL_VEL_EPS;
+            if (past_warmup && shaft_frozen) {
+                if (stuck_since_ms == 0) stuck_since_ms = now_ms;
+                else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
+                    printf("[motor] STALL at %.2f rad → idle + push level=%.2f\n",
+                           s_motor.shaft_angle, clamp_angle(s_motor.shaft_angle));
+                    commanded_vel     = 0.0f;
+                    s_target_angle    = s_motor.shaft_angle;   // pos_err = 0 → at_rest next tick
+                    if (s_settle_cb) s_settle_cb(clamp_angle(s_motor.shaft_angle));
+                    motion_started_ms = 0;
+                    stuck_since_ms    = 0;
+                }
+            } else {
+                stuck_since_ms = 0;
+            }
+        } else {
+            motion_started_ms = 0;
+            stuck_since_ms    = 0;
         }
 
         // Idle-disable: commanded + shaft + pos_err all at rest → start the idle timer.

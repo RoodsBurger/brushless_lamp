@@ -20,11 +20,12 @@ constexpr float CURRENT_LIMIT        = 0.5f;
 constexpr float VELOCITY_LIMIT       = 50.0f;       // SimpleFOC's internal velocity cap
 constexpr float VOLTAGE_SENSOR_ALIGN = 3.0f;   // M2-knob baseline — used once for initFOC (calibration is persisted to NVS so it only runs on first boot / after factory reset)
 // In TorqueControlType::voltage SimpleFOC caps Uq at VOLTAGE_LIMIT, not current_limit.
-// 6 V is the gimbal-example default but saturates the PID at our top 40 rad/s preset
-// (back-EMF ≈ 3.8 V + IR drop ≈ 2.5 V + headroom > 6). 12 V gives clean headroom at
-// 40 rad/s, doubles static torque, still keeps duty well above the DRV8313's 200 ns
-// min-on-time at idle.
-constexpr float VOLTAGE_LIMIT        = 12.0f;
+// Iteration: 6 V → audibly quiet at low speeds but PID railed at 40 rad/s (back-EMF
+// ≈ 3.8 V + IR drop ≈ 2.5 V + headroom > 6). 12 V cleaned that up but at the top
+// preset (40 rad/s) the audibility crept back — headroom too tight. 18 V gives the
+// PID room to breathe at the top end (Uq needed ≈ 10 V ± margin) while still
+// keeping duty well above the DRV8313's 200 ns min-on-time at idle.
+constexpr float VOLTAGE_LIMIT        = 18.0f;
 
 // Inner velocity PID. Second research pass (hardware-specific) pointed at three
 // under-tuned knobs: VOLTAGE_LIMIT (see above), SENSOR_MIN_ELAPSED_TIME (proper

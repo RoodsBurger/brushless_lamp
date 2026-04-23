@@ -184,9 +184,12 @@ extern "C" unsigned short matter_get_color_temp_mireds(void) { return s_color_te
 extern "C" bool           matter_get_on_off(void)            { return s_on_off; }
 
 // Outbound push — marshals attribute::update() onto the CHIP task so arbitrary
-// FreeRTOS threads can call us safely.
+// FreeRTOS threads can call us safely. `also_on` and `force_off` are mutually
+// exclusive: knob motion up from rest implies OnOff=true, knob motion down to 0
+// implies OnOff=false (otherwise the Home app stays at "On, 1%" because
+// MinLevel=1 is the floor the LevelControl cluster can express).
 namespace {
-struct LevelPush { uint16_t ep; uint8_t level; bool also_on; };
+struct LevelPush { uint16_t ep; uint8_t level; bool also_on; bool force_off; };
 }
 static void matter_push_level_work(intptr_t arg) {
     LevelPush *p = reinterpret_cast<LevelPush *>(arg);
@@ -194,8 +197,8 @@ static void matter_push_level_work(intptr_t arg) {
     esp_err_t r = attribute::update(p->ep, LevelControl::Id,
                                     LevelControl::Attributes::CurrentLevel::Id, &v);
     if (r != ESP_OK) ESP_LOGE(TAG, "level update failed: %d", r);
-    if (p->also_on) {
-        esp_matter_attr_val_t vo = esp_matter_bool(true);
+    if (p->also_on || p->force_off) {
+        esp_matter_attr_val_t vo = esp_matter_bool(p->also_on);
         r = attribute::update(p->ep, OnOff::Id, OnOff::Attributes::OnOff::Id, &vo);
         if (r != ESP_OK) ESP_LOGE(TAG, "onoff update failed: %d", r);
     }
@@ -206,20 +209,35 @@ extern "C" void matter_push_level_from_angle(float angle_rad) {
     if (s_endpoint_id == 0) return;
     if (angle_rad < 0.0f) angle_rad = 0.0f;
     if (angle_rad > ANGLE_MAX) angle_rad = ANGLE_MAX;
-    int lv = (int)((angle_rad / ANGLE_MAX) * 254.0f);
-    if (lv < 1)   lv = 1;                // Matter MinLevel
+
+    // Raw level before the MinLevel clamp. Rounded (CylinderLamp pattern) so max
+    // knob position maps to 254 exactly — without +0.5 a final angle just shy of
+    // ANGLE_MAX truncates to 253 and the Home app shows 99 %. want_off only
+    // fires at a true 0 angle, so one detent off zero pushes level=1 + OnOff=true.
+    int raw = (angle_rad >= ANGLE_MAX)
+                ? 254
+                : (int)((angle_rad / ANGLE_MAX) * 254.0f + 0.5f);
+    bool want_off = (angle_rad <= 0.0f);
+    int lv = raw;
+    if (lv < 1)   lv = 1;
     if (lv > 254) lv = 254;
     uint8_t new_level = (uint8_t)lv;
-    if (new_level == s_level) return;    // already in sync
 
-    bool also_on = !s_on_off;
-    s_level  = new_level;
-    if (also_on) s_on_off = true;
+    bool on_changed    = want_off ? s_on_off : !s_on_off;   // anything non-zero implies on
+    bool level_changed = (new_level != s_level);
+    if (!on_changed && !level_changed) return;              // already in sync
 
-    ESP_LOGI(TAG, "push: knob angle=%.2f -> level=%u (%s)",
-             angle_rad, (unsigned)new_level, also_on ? "+OnOff=true" : "level-only");
+    bool also_on    = !want_off && !s_on_off;
+    bool force_off  =  want_off &&  s_on_off;
+    if (also_on)   s_on_off = true;
+    if (force_off) s_on_off = false;
+    s_level = new_level;
 
-    auto *p = new LevelPush{ s_endpoint_id, new_level, also_on };
+    ESP_LOGI(TAG, "push: knob angle=%.2f -> level=%u%s",
+             angle_rad, (unsigned)new_level,
+             also_on ? " +OnOff=true" : (force_off ? " +OnOff=false" : ""));
+
+    auto *p = new LevelPush{ s_endpoint_id, new_level, also_on, force_off };
     chip::DeviceLayer::PlatformMgr().ScheduleWork(matter_push_level_work,
                                                   reinterpret_cast<intptr_t>(p));
 }
