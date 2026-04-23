@@ -1,18 +1,16 @@
-// Shared motor controller for all S3 M-stages. SimpleFOC velocity mode (M2-proven
-// quiet tuning) is the inner; the app-layer task closes the position loop via a
-// linear + physics-bounded trapezoidal profile, plus brake-on-reverse and M2-style
-// idle-disable. Pinned to core 1 — on the XIAO S3 this core is otherwise idle, so
-// the FOC loop sees no preemption from WiFi/Matter/lwIP (they all live on core 0).
+// FOC controller shared by every S3 stage. Runs SimpleFOC in velocity mode on
+// a dedicated core-1 task; the position loop is closed here in the app layer
+// with a pure physics-bounded trapezoidal profile and an M2-proven idle-disable.
 //
-// Two production quirks worth preserving from the C6 phase 14c rounds:
-//   1. SimpleFOC's motor.disable() only issues a single setPwm(0,0,0); the very next
-//      motor.move() re-drives phases. So while idle-disabled we also *skip* the FOC
-//      cycle entirely — the encoder ISR still updates shaft_angle in the background,
-//      so the next target change wakes the task correctly.
-//   2. attachInterrupt binds the ISR to the calling core. We call
-//      encoder.enableInterrupts() from inside this task body, not from app_main, so
-//      the GPIO ISR lives on CORE_MOTOR and noInterrupts() in Encoder::update()
-//      actually blocks it.
+// Two quirks baked in:
+//   - motor.disable() writes setPwm(0,0,0) once; the very next move() re-drives
+//     phases. So while idle-disabled we skip loopFOC()/move() entirely — the
+//     encoder ISR keeps shaft_angle fresh in the background, and the next
+//     target change wakes the task.
+//   - attachInterrupt() binds to the calling core. Calling
+//     encoder.enableInterrupts() from inside the motor task keeps the GPIO ISR
+//     co-resident with the FOC loop so noInterrupts() in Encoder::update()
+//     actually blocks it.
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
@@ -26,70 +24,53 @@
 #include "config.h"
 #include "pins.h"
 
-// NVS namespace for motor calibration. We cache *only* sensor_direction here —
-// NOT zero_electric_angle. Reason: our MT6701 is wired in quadrature/incremental
-// mode, so sensor->getMechanicalAngle() starts at 0 on every boot regardless of
-// where the rotor physically sits. That makes a cached zero_electric_angle from
-// a prior boot meaningless (electrical angle ends up pointing Uq in the wrong
-// direction → no torque). sensor_direction, however, is a physical property of
-// the rotor magnets vs the encoder and stays valid across reboots. Caching it
-// skips the 1000-step forward/reverse rotation sweep at boot — the audibly loud
-// part of initFOC — and leaves only the brief 700 ms zero-angle hold.
+// Cached FOC calibration: sensor_direction only. zero_electric_angle is NOT
+// cached — the MT6701 runs in incremental quadrature, so its counter starts at
+// 0 on every boot regardless of physical rotor position and a stale offset
+// would point Uq the wrong way. sensor_direction is a property of rotor
+// magnets vs encoder and is valid across reboots; caching it skips the loud
+// forward/reverse rotation sweep inside alignSensor().
 static constexpr const char *NVS_NS            = "foc_cal";
 static constexpr const char *NVS_KEY_DIRECTION = "dir";
 
-// Target FOC period. On C6 softfloat each loopFOC naturally took ~200 µs (→ ~5 kHz)
-// and that was the silent M2-knob baseline. On S3's FPU a loopFOC is ~20 µs, so we
-// busy-wait on micros() between iterations to hold the same 200 µs period jitter-
-// free (no FreeRTOS tick granularity). This is the same cadence the Arduino
-// reference ran at organically — exposed explicitly here because we have the CPU
-// headroom to run faster and would otherwise.
+// FOC loop pacing. SimpleFOC produces the quietest PID output on this motor
+// around 5 kHz; the S3 FPU would otherwise run loopFOC at ~50 kHz. 200 µs
+// busy-wait holds the target period jitter-free below the FreeRTOS tick.
 static constexpr uint32_t FOC_PERIOD_US = 200;
 
 static BLDCMotor       s_motor  (POLE_PAIRS);
 static BLDCDriver3PWM  s_driver (PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
 static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
 
-static volatile float  s_target_angle  = 0.0f;
+static volatile float  s_target_angle          = 0.0f;
 static volatile float  s_shaft_angle_cached    = 0.0f;
 static volatile float  s_shaft_velocity_cached = 0.0f;
-static volatile bool   s_sync_pending  = false;
-static void          (*s_settle_cb)(float) = nullptr;
+static volatile bool   s_sync_pending          = false;
+static void          (*s_settle_cb)(float)     = nullptr;
 
-// Manual velocity override — M1's audibility test uses this to drive the motor at
-// precise constant speeds, bypassing the position loop and its accel ramp. The
-// position loop is skipped whenever s_manual_mode is true; a zero manual velocity
-// explicitly clears the flag.
+// Direct velocity mode (M1 audibility sweep, M2 knob velocity-nudge). When
+// s_manual_mode is true the position loop is bypassed and commanded_vel tracks
+// s_manual_vel through the MOTION_ACCEL ramp.
 static volatile float  s_manual_vel    = 0.0f;
 static volatile bool   s_manual_mode   = false;
 
-// Runtime MOTION_VELOCITY (writable via double-click speed cycling). Initialised from
-// config.h default; motor_set_motion_velocity() clamps to (0, VELOCITY_LIMIT].
+// Runtime cruise cap, cycled by double-click through MOTION_VELOCITY_PRESETS.
 static volatile float  s_motion_velocity = MOTION_VELOCITY;
 
 static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
 static void IRAM_ATTR doMotorB() { s_encoder.handleB(); }
 
 static float clamp_angle(float rad) {
-    if (rad < 0.0f)       return 0.0f;
-    if (rad > ANGLE_MAX)  return ANGLE_MAX;
+    if (rad < 0.0f)      return 0.0f;
+    if (rad > ANGLE_MAX) return ANGLE_MAX;
     return rad;
 }
-
-static float clampf(float v, float lo, float hi) {
-    return (v < lo) ? lo : (v > hi ? hi : v);
-}
-
-// Fixed-point formatters — S3 has an FPU so %.2f is cheap, but keeping these keeps
-// logs byte-identical to the M2-knob reference for easy diffing.
-#define FX_HI(v, s) ((long)((int32_t)((v) * (s)) / (s)))
-#define FX_LO(v, s) ((long)((((int32_t)((v) * (s))) < 0 ? -((int32_t)((v) * (s))) : ((int32_t)((v) * (s)))) % (s)))
 
 static void motor_foc_task(void *) {
     // Encoder ISRs must attach from this task so they register on CORE_MOTOR.
     s_encoder.quadrature       = Quadrature::ON;
     s_encoder.pullup           = Pullup::USE_INTERN;
-    s_encoder.min_elapsed_time = SENSOR_MIN_ELAPSED_TIME;   // gate velocity reads vs encoder quantization
+    s_encoder.min_elapsed_time = SENSOR_MIN_ELAPSED_TIME;
     s_encoder.init();
     s_encoder.enableInterrupts(doMotorA, doMotorB);
     s_motor.linkSensor(&s_encoder);
@@ -99,7 +80,7 @@ static void motor_foc_task(void *) {
     delay(2);
 
     s_driver.voltage_power_supply = SUPPLY_VOLTAGE;
-    s_driver.voltage_limit        = VOLTAGE_LIMIT;    // hardware-specific cap (see config.h)
+    s_driver.voltage_limit        = VOLTAGE_LIMIT;
     s_driver.pwm_frequency        = PWM_FREQ_HZ;
     printf("[motor] driver.init()=%d\n", s_driver.init());
     s_motor.linkDriver(&s_driver);
@@ -108,7 +89,7 @@ static void motor_foc_task(void *) {
     s_motor.KV_rating            = KV_RATING;
     s_motor.current_limit        = CURRENT_LIMIT;
     s_motor.velocity_limit       = VELOCITY_LIMIT;
-    s_motor.voltage_limit        = VOLTAGE_LIMIT;       // Uq cap — PID_velocity.limit follows this
+    s_motor.voltage_limit        = VOLTAGE_LIMIT;
     s_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
     s_motor.controller           = MotionControlType::velocity;
     s_motor.torque_controller    = TorqueControlType::voltage;
@@ -124,8 +105,7 @@ static void motor_foc_task(void *) {
 
     printf("[motor] motor.init()=%d\n", s_motor.init());
 
-    // Load persisted sensor_direction (safe-to-cache across boots since it's a
-    // property of the rotor vs encoder, not of absolute position).
+    // Reuse the direction detected on a prior boot if available.
     int8_t  saved_dir = 0;
     {
         nvs_handle_t h;
@@ -136,78 +116,51 @@ static void motor_foc_task(void *) {
     }
     if (saved_dir == (int8_t)Direction::CW || saved_dir == (int8_t)Direction::CCW) {
         s_motor.sensor_direction = (Direction)saved_dir;
-        printf("[motor] cached sensor_direction=%d (skipping direction sweep)\n", (int)saved_dir);
     }
 
     int foc_ok = s_motor.initFOC();
-    printf("[motor] initFOC()=%d zero_elec=%.4f dir=%d core=%d\n",
-           foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction, xPortGetCoreID());
+    printf("[motor] initFOC()=%d zero_elec=%.4f dir=%d\n",
+           foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
     if (!foc_ok) {
         printf("[motor] FOC init FAILED\n");
     } else if (saved_dir == 0 &&
                (s_motor.sensor_direction == Direction::CW || s_motor.sensor_direction == Direction::CCW)) {
-        // First successful alignment — stash the direction so future boots skip the sweep.
+        // Cache the direction so future boots skip the rotation sweep.
         nvs_handle_t h;
         if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
             int8_t d = (int8_t)s_motor.sensor_direction;
             nvs_set_i8(h, NVS_KEY_DIRECTION, d);
             nvs_commit(h);
             nvs_close(h);
-            printf("[motor] sensor_direction=%d saved to NVS\n", (int)d);
         }
     }
 
-    s_motor.disable();   // boot idle — first target change wakes it
+    s_motor.disable();   // boot idle; first target change wakes the task
 
-    float    commanded_vel = 0.0f;
-    uint32_t last_ramp_us  = 0;
-    uint32_t prev_loop_us  = 0;
-    uint32_t max_loop_us   = 0;
-    uint32_t last_print_ms = 0;
-    uint32_t last_active_ms = 0;
-    uint32_t iter          = 0;
-    uint32_t next_foc_us   = micros();
+    float    commanded_vel     = 0.0f;
+    uint32_t last_ramp_us      = 0;
+    uint32_t last_active_ms    = 0;
+    uint32_t next_foc_us       = micros();
+    uint32_t motion_started_ms = 0;     // stall: 0 = not trying to move
+    uint32_t stuck_since_ms    = 0;     // stall: 0 = shaft isn't frozen in this attempt
 
-    // Stall detection state. On stall: stop the motor, idle-disable, and push the
-    // current position to Matter. No latching — the next target change (knob or
-    // slider) is free to command motion; if the mechanical block is still there,
-    // another stall will fire. This matches the user's requested "just stop" feel
-    // instead of the soft-stall blocked-direction gate we tried previously.
-    uint32_t motion_started_ms = 0;
-    uint32_t stuck_since_ms    = 0;
-
-    // On a dedicated core the motor task would starve IDLE and trip the IDLE
-    // watchdog — don't check IDLE on this core. We still yield periodically via
-    // the busy-wait fallback below, so the RTOS stays healthy.
+    // Dedicated core: the motor task starves IDLE, so drop IDLE's wdt check.
     esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR));
 
     while (true) {
-        // Busy-wait until next 200 µs boundary. Matches Arduino M2's naturally-~5 kHz
-        // softfloat loop rate, jitter-free below the FreeRTOS tick. Any spare time
-        // after the iteration is spent in the wait — IDLE on this core won't run
-        // (handled by the task_wdt_delete above), but the OTHER core isn't blocked.
+        // Busy-wait to the next 200 µs boundary; if we fell behind by more
+        // than two periods (e.g. a long printf), resync to avoid a catch-up
+        // burst of back-to-back iterations.
         uint32_t now_us = micros();
         while ((int32_t)(now_us - next_foc_us) < 0) {
             now_us = micros();
         }
         next_foc_us += FOC_PERIOD_US;
-        // If we're falling behind (took > FOC_PERIOD_US of processing), skip forward
-        // so we don't try to "catch up" with a bunch of rapid-fire iterations.
         if ((int32_t)(now_us - next_foc_us) > (int32_t)(2 * FOC_PERIOD_US)) {
             next_foc_us = now_us + FOC_PERIOD_US;
         }
-        if (prev_loop_us != 0) {
-            uint32_t d = now_us - prev_loop_us;
-            if (d > max_loop_us) max_loop_us = d;
-        }
-        prev_loop_us = now_us;
 
-        // Manual-velocity mode — keeps the same trapezoidal ramp (MOTION_ACCEL) as the
-        // production position loop, but takes the target velocity directly from the
-        // app instead of deriving it from pos_err. Only enters on s_manual_mode: the
-        // older "also run if commanded_vel hasn't fully decayed" fallthrough caused
-        // angle-only stages (M3/M4) to ping-pong between branches whenever the
-        // position loop was commanding a non-trivial velocity.
+        // Direct-velocity path (M1 sweep, M2 velocity-nudge).
         if (s_manual_mode) {
             float dt_m = (last_ramp_us == 0) ? 0.0f : (now_us - last_ramp_us) * 1e-6f;
             last_ramp_us = now_us;
@@ -220,7 +173,7 @@ static void motor_foc_task(void *) {
                 commanded_vel = s_manual_vel;
             }
 
-            bool at_rest_m = fabsf(commanded_vel) < VEL_AT_REST_EPS &&
+            bool at_rest_m = fabsf(commanded_vel)         < VEL_AT_REST_EPS &&
                              fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS;
             if (!at_rest_m) last_active_ms = millis();
             bool live = (millis() - last_active_ms) < IDLE_DISABLE_MS;
@@ -238,35 +191,17 @@ static void motor_foc_task(void *) {
 
             s_shaft_angle_cached    = s_motor.shaft_angle;
             s_shaft_velocity_cached = s_motor.shaft_velocity;
-
-            if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
-                last_print_ms = millis();
-                printf("[motor] manual target:%ld.%02ld cmd:%ld.%02ld shaft_vel:%ld.%02ld ang:%ld.%02ld en:%d maxLp:%luus\n",
-                       FX_HI(s_manual_vel,            100), FX_LO(s_manual_vel,            100),
-                       FX_HI(commanded_vel,           100), FX_LO(commanded_vel,           100),
-                       FX_HI(s_motor.shaft_velocity,  100), FX_LO(s_motor.shaft_velocity,  100),
-                       FX_HI(s_motor.shaft_angle,     100), FX_LO(s_motor.shaft_angle,     100),
-                       (int)s_motor.enabled,
-                       (unsigned long)max_loop_us);
-                max_loop_us = 0;
-            }
-            ++iter;
             continue;
         }
 
-        float pos_err = s_target_angle - s_motor.shaft_angle;
-
-        // Pure physics-bounded trapezoidal — desired speed at distance `err` is the
-        // highest value we can still brake to zero from, given MOTION_ACCEL. Capping
-        // by MOTION_VELOCITY gives the textbook accel/cruise/decel profile; no linear
-        // term near target, so motion stays fast until the last few ticks.
+        // Position loop: physics-bounded trapezoidal descent toward target.
+        float pos_err     = s_target_angle - s_motor.shaft_angle;
         float brake_v     = sqrtf(2.0f * MOTION_ACCEL * fabsf(pos_err));
         float desired_mag = fminf(s_motion_velocity, brake_v);
         float desired_raw = (pos_err >= 0.0f) ? desired_mag : -desired_mag;
 
-        // Brake-on-reverse: opposite-direction target forces commanded through zero before
-        // accepting the new sign. Same-direction updates flow through the ramp unchanged.
-        const float MOTION_EPS = 0.5f;
+        // Brake-on-reverse: a target flip forces commanded_vel through zero
+        // before accepting the new sign.
         bool cur_fwd  = commanded_vel >  MOTION_EPS;
         bool cur_rev  = commanded_vel < -MOTION_EPS;
         bool want_fwd = desired_raw   >  MOTION_EPS;
@@ -285,12 +220,11 @@ static void motor_foc_task(void *) {
             commanded_vel = desired_vel;
         }
 
-        // Stall detection: trying to move but shaft not following for long enough
-        // → declare stall. Response is minimal: zero the drive, snap the internal
-        // target to the current shaft so pos_err=0 and the motor idle-disables on
-        // the next at_rest check, and push the clamped position to Matter so the
-        // controller-side slider mirrors reality. If the user commands another
-        // move afterwards and the block is still there, another stall will fire.
+        // Stall detection: if commanded motion isn't reaching the shaft after
+        // WARMUP + TIMEOUT, snap the internal target to the current shaft (so
+        // pos_err→0 and at_rest idle-disables next tick) and tell Matter about
+        // the new resting position. A fresh target command re-engages the
+        // motor; if the block is still there, stall fires again.
         bool trying_to_move = fabsf(commanded_vel) > STALL_VEL_EPS;
         if (trying_to_move) {
             uint32_t now_ms = millis();
@@ -300,10 +234,9 @@ static void motor_foc_task(void *) {
             if (past_warmup && shaft_frozen) {
                 if (stuck_since_ms == 0) stuck_since_ms = now_ms;
                 else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
-                    printf("[motor] STALL at %.2f rad → idle + push level=%.2f\n",
-                           s_motor.shaft_angle, clamp_angle(s_motor.shaft_angle));
+                    printf("[motor] STALL at %.2f rad\n", s_motor.shaft_angle);
                     commanded_vel     = 0.0f;
-                    s_target_angle    = s_motor.shaft_angle;   // pos_err = 0 → at_rest next tick
+                    s_target_angle    = s_motor.shaft_angle;
                     if (s_settle_cb) s_settle_cb(clamp_angle(s_motor.shaft_angle));
                     motion_started_ms = 0;
                     stuck_since_ms    = 0;
@@ -316,9 +249,10 @@ static void motor_foc_task(void *) {
             stuck_since_ms    = 0;
         }
 
-        // Idle-disable: commanded + shaft + pos_err all at rest → start the idle timer.
-        // After IDLE_DISABLE_MS the driver cuts PWM and we stop calling motor.move() so
-        // setPwm(0,0,0) sticks. On entry: invoke the settle callback (M4 Matter push).
+        // Idle-disable: all three (commanded, shaft, pos_err) at rest → start
+        // the idle timer; once expired the driver cuts PWM and we stop calling
+        // move() so setPwm(0,0,0) persists. Entry also fires the settle
+        // callback so Matter-slider or knob-initiated moves push back once.
         bool at_rest = fabsf(commanded_vel)          < VEL_AT_REST_EPS &&
                        fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS &&
                        fabsf(pos_err)                < POS_AT_REST_EPS;
@@ -342,20 +276,6 @@ static void motor_foc_task(void *) {
 
         s_shaft_angle_cached    = s_motor.shaft_angle;
         s_shaft_velocity_cached = s_motor.shaft_velocity;
-
-        if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
-            last_print_ms = millis();
-            printf("[motor] tgt:%ld.%02ld ang:%ld.%02ld vel:%ld.%02ld cmd:%ld.%02ld en:%d maxLp:%luus\n",
-                   FX_HI(s_target_angle,         100), FX_LO(s_target_angle,         100),
-                   FX_HI(s_motor.shaft_angle,    100), FX_LO(s_motor.shaft_angle,    100),
-                   FX_HI(s_motor.shaft_velocity, 100), FX_LO(s_motor.shaft_velocity, 100),
-                   FX_HI(commanded_vel,          100), FX_LO(commanded_vel,          100),
-                   (int)s_motor.enabled,
-                   (unsigned long)max_loop_us);
-            max_loop_us = 0;
-        }
-
-        ++iter;
     }
 }
 
@@ -371,10 +291,11 @@ void motor_set_settle_callback(void (*cb)(float)) { s_settle_cb = cb; }
 
 void motor_run_at_velocity(float rad_per_sec) {
     if (rad_per_sec == 0.0f) {
-        s_manual_mode = false;
-        s_manual_vel  = 0.0f;
-        // Don't call disable here — the position loop's idle-disable will pick up
-        // on the new at_rest state and cut PWM cleanly on its next tick.
+        // Hand control back to the position loop at the current shaft
+        // position so pos_err=0 and idle-disable fires cleanly next tick.
+        s_manual_mode  = false;
+        s_manual_vel   = 0.0f;
+        s_target_angle = s_shaft_angle_cached;
     } else {
         s_manual_vel  = rad_per_sec;
         s_manual_mode = true;

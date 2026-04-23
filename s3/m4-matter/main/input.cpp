@@ -58,7 +58,7 @@ static void IRAM_ATTR onKnobEdge() {
 
 static void on_single_click() {
     s_brightness_mode = !s_brightness_mode;
-    ESP_LOGI(TAG, "click → %s mode", s_brightness_mode ? "BRIGHTNESS" : "motor");
+    ESP_LOGI(TAG, "mode=%s", s_brightness_mode ? "brightness" : "motor");
 }
 
 static void on_double_click() {
@@ -67,8 +67,10 @@ static void on_double_click() {
     float new_v = MOTION_VELOCITY_PRESETS[s_speed_idx];
     motor_set_motion_velocity(new_v);
     leds_pulse((uint8_t)(s_speed_idx + 1));
+    // Synchronous NVS commit (~10-30 ms) on the 10 ms input task; acceptable
+    // because double-click is a rare discrete event, not a rapid knob gesture.
     input_save_speed_idx();
-    ESP_LOGI(TAG, "2× → speed[%u] = %.1f rad/s", s_speed_idx, new_v);
+    ESP_LOGI(TAG, "speed=%.1f rad/s", new_v);
 }
 
 enum class BtnEvent : uint8_t { NONE, CLICK, DOUBLE_CLICK, HOLD_WARNING, FACTORY_RESET };
@@ -143,12 +145,9 @@ static void input_task(void *) {
         if (delta) {
             if (s_brightness_mode) {
                 leds_nudge_max_duty((int16_t)(delta * LED_MAX_DUTY_STEP));
-                ESP_LOGI(TAG, "knob %+ld → max_duty=%u", (long)delta, (unsigned)leds_get_max_duty());
             } else {
                 motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
                 motor_request_matter_sync_on_settle();   // pushes level to Matter once at rest
-                ESP_LOGI(TAG, "knob %+ld → target=%.2f rad",
-                         (long)delta, motor_get_target_angle());
             }
         }
 

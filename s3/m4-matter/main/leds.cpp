@@ -26,9 +26,6 @@ static constexpr const char    *LED_NVS_NS       = "leds";
 static constexpr const char    *LED_NVS_KEY_DUTY = "maxduty";
 static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;  // ms
 
-static constexpr uint32_t LED_PWM_FREQ_HZ      = 25000;
-static constexpr uint8_t  LED_PWM_RESOLUTION   = 8;
-
 // Target state (writable from input task / Matter callback on CORE_OTHERS). s_on
 // defaults true on M3 — the angle curve already does the visual off-at-zero work,
 // so M3 never touches the flag. M4 will bind this to Matter's OnOff cluster.

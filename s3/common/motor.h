@@ -2,12 +2,11 @@
 
 #include <stdint.h>
 
-// Shared motor control API for all M-stages (m1-motor through m4-matter). The S3 port
-// uses SimpleFOC v2.4.0 in velocity mode with M2-knob's proven-quiet PID, and closes
-// the position loop in the app-layer task via a linear+physics-bounded trapezoidal
-// profile. The FOC task is pinned to core 1 (CORE_MOTOR) and calls attachInterrupt
-// from inside its own task body so the encoder ISR lives on the same core as the
-// control loop — arduino-esp32's noInterrupts() is per-core only.
+// Motor control surface shared by every S3 stage. SimpleFOC v2.4.0 runs in
+// velocity mode on a dedicated core-1 task; the position loop is closed in the
+// app layer with a physics-bounded trapezoidal profile. The FOC task attaches
+// its encoder ISR from within its own body so the ISR lives on CORE_MOTOR —
+// arduino-esp32's noInterrupts() is per-core.
 
 void  motor_init_and_start();
 
@@ -17,25 +16,24 @@ float motor_get_target_angle();
 float motor_get_shaft_angle();
 float motor_get_shaft_velocity();
 
-// Optional settle callback — motor.cpp invokes it once per knob-initiated move as
-// soon as the idle-disable fires (i.e. the rotor has come to rest at the target).
-// M4 registers matter_push_level_from_angle here; M1–M3 leave it null, which means
-// the same motor.cpp links cleanly for every stage without any Matter dependency.
+// Settle callback fires once per move as soon as idle-disable latches at rest.
+// M4 registers matter_push_level_from_angle here; other stages leave it null
+// so motor.cpp links cleanly without a Matter dependency.
 void  motor_set_settle_callback(void (*cb)(float angle_rad));
 
-// Called by input.cpp (M2+) right after a knob nudge, to arm the one-shot settle
-// push. Without the arm flag, motor.cpp doesn't invoke the callback — this keeps
-// Matter-slider-initiated moves from bouncing back through the callback path.
+// Arms the settle callback for the next rest event. Knob nudges call this so
+// Matter learns the new position; Matter-slider-driven moves don't, to avoid
+// bouncing their own writes back through the callback.
 void  motor_request_matter_sync_on_settle();
 
-// Direct-velocity mode — bypasses the position loop and drives SimpleFOC's velocity
-// target directly at rad_per_sec. Used by m1-motor for audibility tests at precise
-// constant speeds (the position loop caps at MOTION_VELOCITY and ramps). Pass 0.0f
-// to exit and return to position control + idle-disable.
+// Direct-velocity mode — bypasses the position loop and drives SimpleFOC's
+// velocity target at rad_per_sec with the same MOTION_ACCEL ramp. Pass 0.0f
+// to exit: manual mode clears and s_target_angle resyncs to the current
+// shaft so the position loop idle-disables on its next tick.
 void  motor_run_at_velocity(float rad_per_sec);
 
-// Runtime MOTION_VELOCITY override — double-click cycling uses this to swap
-// speed presets at runtime without rebuilding. A value ≤ 0 restores the config.h
-// default. Clamped to (0, VELOCITY_LIMIT] internally.
+// Runtime cruise cap used by the position loop. Double-click cycling swaps
+// between MOTION_VELOCITY_PRESETS[] without rebuild. rad_per_sec ≤ 0 restores
+// the config.h default; otherwise clamped to (0, VELOCITY_LIMIT].
 void  motor_set_motion_velocity(float rad_per_sec);
 float motor_get_motion_velocity();

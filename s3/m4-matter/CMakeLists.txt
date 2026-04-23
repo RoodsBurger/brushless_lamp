@@ -20,6 +20,10 @@ endif()
 set(ESP_MATTER_PATH $ENV{ESP_MATTER_PATH})
 set(MATTER_SDK_PATH ${ESP_MATTER_PATH}/connectedhomeip/connectedhomeip)
 
+# button_driver + led_driver are required transitively by esp-matter's
+# examples/common components (app_reset REQUIRES button; device_hal/device
+# REQUIRES led_driver). We don't consume either ourselves (M4 has its own
+# input.cpp / leds.cpp), but the component resolver still needs them visible.
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../common"
     "${CMAKE_CURRENT_LIST_DIR}/../components"

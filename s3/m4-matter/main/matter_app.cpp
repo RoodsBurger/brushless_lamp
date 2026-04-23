@@ -1,19 +1,17 @@
-// Matter ColorTemperatureLight endpoint — the full smart-home surface.
+// Matter ColorTemperatureLight endpoint.
 //
-// Inbound (controller app → device): attribute_update_cb fires on OnOff / Level /
-// ColorTemperature writes, stores the new value, and apply_state() routes it into
-// motor_set_target_angle() and the leds.cpp follower sees the new color temp via
-// matter_get_color_temp_mireds(). Echo suppression (same-value short-circuit) keeps
-// our own push-backs from re-triggering motor motion.
+// Inbound: attribute_update_cb fires on OnOff / Level / ColorTemperature
+// writes, stores the new value, and apply_state() pushes it into the motor
+// target and leds_set_colortemp. Echo suppression (same-value short-circuit)
+// keeps our own pushbacks from re-triggering motor motion.
 //
-// Outbound (knob → device → controller app): motor.cpp's settle callback fires
-// matter_push_level_from_angle() once per knob gesture (after the lamp comes to
-// rest). attribute::update() runs on the CHIP task via PlatformMgr::ScheduleWork
-// so cross-task access to the data model is serialized.
+// Outbound: motor.cpp's settle callback fires matter_push_level_from_angle()
+// once per knob gesture (at rest). attribute::update() runs on the CHIP task
+// via PlatformMgr::ScheduleWork, serialising data-model access.
 //
-// One landmine worth surfacing in the code: LevelControl::CurrentLevel is declared
-// nullable in esp_matter's data-model; pushing esp_matter_uint8(v) (non-nullable)
-// is silently rejected with ESP_ERR_INVALID_ARG=258. Use esp_matter_nullable_uint8.
+// Note: LevelControl::CurrentLevel is nullable in esp_matter's data model;
+// push with esp_matter_nullable_uint8() — the non-nullable variant is rejected
+// as ESP_ERR_INVALID_ARG=258.
 
 #include <esp_err.h>
 #include <esp_log.h>
@@ -22,6 +20,8 @@
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
+#include <platform/CommissionableDataProvider.h>
+#include <platform/DeviceInstanceInfoProvider.h>
 #include <setup_payload/OnboardingCodesUtil.h>
 #include <setup_payload/QRCodeSetupPayloadGenerator.h>
 #include <setup_payload/ManualSetupPayloadGenerator.h>
@@ -32,13 +32,12 @@
 #include "leds.h"
 #include "config.h"
 
-// Override arduino-esp32's weak btInUse() so initArduino() does NOT call
-// esp_bt_controller_mem_release(ESP_BT_MODE_BTDM). Without this, Arduino frees
-// the BT controller's own memory into the heap, then Matter's bt_controller_init
-// malloc's from that same internal-RAM pool and reads a corrupted TLSF header —
-// LoadProhibited during r_llm_env_init. Discovered via phase-15 research pass;
-// same fix that ESP Rainmaker uses when co-existing with Matter+NimBLE on S3.
-extern "C" bool btInUse(void) { return true; }
+// Strong override of arduino-esp32's weak btInUse(): keeps initArduino() from
+// calling esp_bt_controller_mem_release(), which would free the BT controller's
+// internal-RAM pool into the TLSF heap and corrupt r_llm_env_init's malloc
+// (LoadProhibited crash during Matter's BLE bring-up). __attribute__((used))
+// keeps the symbol even under LTO.
+extern "C" __attribute__((used)) bool btInUse(void) { return true; }
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -47,25 +46,20 @@ using namespace chip::app::Clusters;
 
 static const char *TAG = "matter";
 
-static uint16_t s_endpoint_id = 0;
+static volatile uint16_t s_endpoint_id = 0;
 
-// Cached attribute state — motor/LEDs read this, attribute_update_cb writes it.
-static bool     s_on_off             = false;
-static uint8_t  s_level              = 1;    // Matter MinLevel
-static uint16_t s_color_temp_mireds  = 250;  // neutral daylight
+// Cached attribute state. CHIP task writes via attribute_update_cb; motor/LEDs
+// read from other FreeRTOS tasks. volatile so the reader doesn't hoist the load
+// across loop iterations — float-tearing on a 16-bit/8-bit aligned word is
+// benign on xtensa-esp32s3.
+static volatile bool     s_on_off             = false;
+static volatile uint8_t  s_level              = 1;    // Matter MinLevel
+static volatile uint16_t s_color_temp_mireds  = 250;  // neutral daylight
 
 static void apply_state() {
-    // Matter state → device state:
-    //   OnOff=false: just set motor target to 0. The LEDs follow shaft_angle
-    //     continuously via the angle curve, so they fade out WITH the physical
-    //     motion (kinetic "closing" feel) instead of snapping dark the instant
-    //     the Home app toggle flips.
-    //   OnOff=true:  motor target = (level / 254) × ANGLE_MAX, LEDs light via
-    //     angle curve as shaft climbs.
-    //   ColorTemp always mirrors Matter's ColorTemperatureMireds attribute.
-    // leds_set_on(true) is sticky (default) — we don't flip it here. The angle
-    // curve reaches 0 duty at shaft_angle=0 naturally, so an explicit hard kill
-    // isn't needed for the Matter off path.
+    // OnOff off → motor target 0 (LEDs fade with the physical travel via the
+    // angle curve, not an instant snap). OnOff on → target = level/254 ×
+    // ANGLE_MAX. ColorTemp mirrors the Matter attribute into the fader.
     leds_set_colortemp(s_color_temp_mireds);
     float target = s_on_off ? ((float)s_level / 254.0f) * ANGLE_MAX : 0.0f;
     motor_set_target_angle(target);
@@ -155,21 +149,24 @@ void matter_app_init() {
     esp_err_t err = esp_matter::start(event_cb);
     if (err != ESP_OK) { ESP_LOGE(TAG, "esp_matter::start err=%d", err); return; }
 
-    // Print the exact commissioning payload so the user can paste it into their
-    // controller app. The chip's generator uses the factory-data-provider values,
-    // which for our current build (no production certs flashed) are Matter's test
-    // defaults — but we'd rather print the true values than assume them.
+    // Log the live VID/PID/discriminator + onboarding payload. When fctry holds
+    // real mfg-tool data the VID/PID/discriminator are per-device; the passcode
+    // Matter prints in the QR is a fallback (we persist only the Spake2+
+    // verifier, not the raw code), so the real QR to scan lives in the CSV
+    // esp-matter-mfg-tool emits alongside the partition binaries.
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+        uint16_t vid = 0, pid = 0, discriminator = 0;
+        auto *info = chip::DeviceLayer::GetDeviceInstanceInfoProvider();
+        auto *cd   = chip::DeviceLayer::GetCommissionableDataProvider();
+        if (info) { info->GetVendorId(vid); info->GetProductId(pid); }
+        if (cd)   { cd->GetSetupDiscriminator(discriminator); }
+        ESP_LOGI(TAG, "factory data: VID=0x%04X PID=0x%04X discriminator=%u",
+                 vid, pid, (unsigned)discriminator);
         PrintOnboardingCodes(chip::RendezvousInformationFlag(chip::RendezvousInformationFlag::kBLE));
     } else {
         ESP_LOGI(TAG, "already commissioned (%u fabrics)",
                  (unsigned)chip::Server::GetInstance().GetFabricTable().FabricCount());
     }
-
-    // Nothing special uncommissioned — the fader on its own will hold s_on=true
-    // (default) and the LED curve goes to 0 at shaft_angle=0, so the lamp sits
-    // dark until the user rotates the knob. That's a cleaner "ready to pair"
-    // state than the M3-era hard-coded 16/8 dim glow.
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();

@@ -1,5 +1,7 @@
 # Brushless Lamp
 
+> **Current build targets the Seeed XIAO ESP32-S3 — see [`s3/README.md`](s3/README.md)** for hardware, wiring, toolchain, build / flash, per-device Matter provisioning, workarounds, code architecture and troubleshooting. The sections below describe the earlier C6 build preserved at `esp-idf/` as a rollback target.
+
 Kinetic smart lamp — BLDC variant of [CylinderLamp](../CylinderLamp). Same concept (lit core raised/lowered by a motor to control brightness), but the stepper + TMC2209 is replaced by a gimbal BLDC motor driven through a SimpleFOC Mini, with a Seeed XIAO ESP32-C6 running the FOC commutation itself.
 
 ## Current milestones — M1 + M2 + M3a + M3b + M4

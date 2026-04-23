@@ -18,9 +18,6 @@
 #include "config.h"
 #include "pins.h"
 
-static constexpr uint32_t LED_PWM_FREQ_HZ      = 25000;
-static constexpr uint8_t  LED_PWM_RESOLUTION   = 8;
-
 // Target state (writable from input task / Matter callback on CORE_OTHERS). s_on
 // defaults true on M3 — the angle curve already does the visual off-at-zero work,
 // so M3 never touches the flag. M4 will bind this to Matter's OnOff cluster.

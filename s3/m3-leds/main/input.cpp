@@ -43,7 +43,7 @@ static void factory_reset() {
 
 static void on_single_click() {
     s_brightness_mode = !s_brightness_mode;
-    printf("[input] click → %s mode\n", s_brightness_mode ? "BRIGHTNESS" : "motor");
+    printf("[input] mode=%s\n", s_brightness_mode ? "brightness" : "motor");
 }
 
 static void on_double_click() {
@@ -52,7 +52,7 @@ static void on_double_click() {
     float new_v = MOTION_VELOCITY_PRESETS[s_speed_idx];
     motor_set_motion_velocity(new_v);
     leds_pulse((uint8_t)(s_speed_idx + 1));
-    printf("[input] 2× → speed[%u] = %.1f rad/s\n", s_speed_idx, new_v);
+    printf("[input] speed=%.1f rad/s\n", new_v);
 }
 
 // Combined button + click detector. Called every tick. Returns the decoded event
@@ -135,25 +135,15 @@ static void input_task(void *) {
         portENABLE_INTERRUPTS();
 
         if (delta) {
-            if (s_brightness_mode) {
-                leds_nudge_max_duty((int16_t)(delta * LED_MAX_DUTY_STEP));
-                printf("[input] knob %+ld -> max_duty=%u\n",
-                       (long)delta, (unsigned)leds_get_max_duty());
-            } else {
-                motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
-                printf("[input] knob %+ld -> target=%.2f rad\n",
-                       (long)delta, motor_get_target_angle());
-            }
+            if (s_brightness_mode) leds_nudge_max_duty((int16_t)(delta * LED_MAX_DUTY_STEP));
+            else                   motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
         }
 
-        // Button events.
         switch (poll_button()) {
-        case BtnEvent::CLICK:          on_single_click(); break;
-        case BtnEvent::DOUBLE_CLICK:   on_double_click(); break;
-        case BtnEvent::HOLD_WARNING:   leds_pulse(5);
-                                       printf("[input] 5 s hold — release soon or factory-reset at 9 s\n");
-                                       break;
-        case BtnEvent::FACTORY_RESET:  factory_reset(); break;
+        case BtnEvent::CLICK:          on_single_click();               break;
+        case BtnEvent::DOUBLE_CLICK:   on_double_click();               break;
+        case BtnEvent::HOLD_WARNING:   leds_pulse(5);                   break;
+        case BtnEvent::FACTORY_RESET:  factory_reset();                 break;
         case BtnEvent::NONE:           break;
         }
 

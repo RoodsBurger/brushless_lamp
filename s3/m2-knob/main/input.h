@@ -1,15 +1,12 @@
 #pragma once
 
-// Knob + button input for the M2 stage. The knob is a quadrature encoder on
-// PIN_ROT_A / PIN_ROT_B; button is active-low with internal pull-up on PIN_BTN.
-// input_init() calls pinMode / attachInterrupt, and input_task_start() spawns the
-// 10 ms polling task that drains knob detents into motor_nudge_target_angle() and
-// debounces the button into motor_set_target_angle(0).
-//
-// Both calls live on the arduino-event core (CORE_OTHERS) — NOT the motor core.
-// That's intentional: we want attachInterrupt registered on core 0 so it doesn't
-// interrupt the FOC loop on core 1. The per-core interrupt register-bank means
-// CORE_MOTOR's ISRs are completely untouched by the knob activity.
+// Knob + button input for the M2 velocity-nudge stage. Quadrature encoder on
+// PIN_ROT_A / PIN_ROT_B, active-low button with internal pull-up on PIN_BTN.
+// input_init() wires pinMode + attachInterrupt; input_task_start() spawns the
+// 10 ms polling task that turns each detent into ±KNOB_STEP_RAD_PER_SEC on the
+// motor's manual-velocity target via motor_run_at_velocity(), and zeros it on
+// button press. Both calls run on CORE_OTHERS so the GPIO ISR registers on
+// core 0 and never preempts the FOC loop on core 1.
 
 void input_init();
 void input_task_start();
