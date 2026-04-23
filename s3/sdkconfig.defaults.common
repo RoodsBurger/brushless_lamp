@@ -1,0 +1,34 @@
+## Shared defaults for every M-stage. Each m-project's CMakeLists does:
+##   set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.defaults.common
+##                          ${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults.esp32s3")
+## so the common bits are inherited and stage-specific overrides stack on top.
+
+## Arduino-as-component: we own app_main and call initArduino() from main.cpp.
+CONFIG_AUTOSTART_ARDUINO=n
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_TIMER_TASK_STACK_SIZE=4096
+
+## Dual-core affinity — all Arduino and IDF background tasks on core 0. Motor FOC
+## task pins itself to core 1 in motor.cpp via xTaskCreatePinnedToCore.
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_ESP_WIFI_TASK_CORE_ID_0=y
+CONFIG_ARDUINO_RUN_CORE0=y
+CONFIG_ARDUINO_EVENT_RUN_CORE0=y
+CONFIG_ARDUINO_SERIAL_EVENT_RUN_CORE0=y
+CONFIG_ARDUINO_UDP_RUN_CORE0=y
+
+## Selectively compile only what we use from arduino-esp32. The Matter library is
+## disabled because its Matter.h pulls <esp_matter.h> without a proper dep, and it
+## would duplicate chip symbols via maybe_add_component(espressif__esp_matter).
+## The other four disables just save flash on stages that don't touch them.
+CONFIG_ARDUINO_SELECTIVE_COMPILATION=y
+CONFIG_ARDUINO_SELECTIVE_Matter=n
+CONFIG_ARDUINO_SELECTIVE_OpenThread=n
+CONFIG_ARDUINO_SELECTIVE_Insights=n
+CONFIG_ARDUINO_SELECTIVE_Zigbee=n
+
+## Logging — INFO at runtime, DEBUG compiled-in.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

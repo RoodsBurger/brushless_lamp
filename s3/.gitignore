@@ -1,0 +1,8 @@
+## Build artifacts — authoritative build tree lives at ~/esp/brushlesslamp-s3/
+## (no spaces, workaround for libsodium's unquoted -include). Same pattern as
+## ../esp-idf/.gitignore.
+**/build/
+**/managed_components/
+**/dependencies.lock
+**/sdkconfig
+**/sdkconfig.old

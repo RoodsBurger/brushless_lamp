@@ -1,0 +1,12 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# XIAO ESP32-S3 8 MB flash layout. OTA slots at 2 MB each leave ~3.85 MB of tail
+# space reserved for future production / debug artifacts (littlefs, secondary
+# factory blobs). fctry holds the per-device DAC written by esp-matter-mfg-tool.
+esp_secure_cert,  0x3F, ,0xd000,    0x2000, encrypted
+nvs,      data, nvs,     0x10000,   0xC000,
+nvs_keys, data, nvs_keys,,          0x1000, encrypted
+otadata,  data, ota,     ,          0x2000
+phy_init, data, phy,     ,          0x1000,
+ota_0,    app,  ota_0,   0x20000,   0x200000,
+ota_1,    app,  ota_1,   0x220000,  0x200000,
+fctry,    data, nvs,     0x420000,  0x6000

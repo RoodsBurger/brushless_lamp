@@ -1,0 +1,19 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+## XIAO S3 USB — same USB_SERIAL_JTAG path as C6 (no TinyUSB). Serial from Arduino
+## also routes here via -DARDUINO_USB_MODE=1 in main/CMakeLists.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+## 8 MB flash + 8 MB Quad PSRAM on XIAO S3. PSRAM gives CHIP's cert cache and
+## cluster metadata somewhere to go without eating internal SRAM.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+## Production cred hooks (populated in Phase 14d / 16 via esp-matter-mfg-tool).
+CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER=y
+CONFIG_SEC_CERT_DAC_PROVIDER=y
+CONFIG_SEC_CERT_COMMISSIONABLE_DATA_PROVIDER=y

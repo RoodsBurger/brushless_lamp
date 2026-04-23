@@ -1,0 +1,8 @@
+## M4 uses esp-matter as an EXTRA_COMPONENT_DIR (top-level CMakeLists wires it in),
+## NOT as a Component Manager dependency — that's why you see only the arduino-esp32
+## line here. chip and esp_matter are pulled in via CMake directly.
+dependencies:
+  idf:
+    version: ">=5.4.0"
+  espressif/arduino-esp32:
+    version: "^3.2.0"
