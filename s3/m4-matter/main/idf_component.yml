@@ -1,8 +1,16 @@
 ## M4 uses esp-matter as an EXTRA_COMPONENT_DIR (top-level CMakeLists wires it in),
 ## NOT as a Component Manager dependency — that's why you see only the arduino-esp32
 ## line here. chip and esp_matter are pulled in via CMake directly.
+##
+## esp_secure_cert_mgr is pinned to 2.5.0 because 2.9.x removed the
+## esp_secure_cert_get_priv_key() symbol that CHIP's ESP32SecureCertDACProvider
+## still calls (connectedhomeip#31382, esp-matter#798). esp-matter release/v1.5
+## pins ^2.5.0 itself but the manager will happily resolve to the newest matching,
+## which is 2.9.2 as of this writing — so we over-pin locally.
 dependencies:
   idf:
     version: ">=5.4.0"
   espressif/arduino-esp32:
     version: "^3.2.0"
+  espressif/esp_secure_cert_mgr:
+    version: "2.5.0"

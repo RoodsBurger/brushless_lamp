@@ -18,7 +18,7 @@ constexpr float PHASE_RESISTANCE     = 5.0f;
 constexpr float KV_RATING            = 100.0f;
 constexpr float CURRENT_LIMIT        = 0.5f;
 constexpr float VELOCITY_LIMIT       = 50.0f;       // SimpleFOC's internal velocity cap
-constexpr float VOLTAGE_SENSOR_ALIGN = 3.0f;   // M2-knob baseline — used once for initFOC (calibration is persisted to NVS so it only runs on first boot / after factory reset)
+constexpr float VOLTAGE_SENSOR_ALIGN = 6.0f;   // enough torque (~1.2 A on 5 Ω) for the first-boot / post-factory-reset direction sweep to move smoothly instead of choppy. Only runs at initFOC — sensor_direction is cached to NVS so it doesn't repeat on every boot.
 // In TorqueControlType::voltage SimpleFOC caps Uq at VOLTAGE_LIMIT, not current_limit.
 // Iteration: 6 V → audibly quiet at low speeds but PID railed at 40 rad/s (back-EMF
 // ≈ 3.8 V + IR drop ≈ 2.5 V + headroom > 6). 12 V cleaned that up but at the top
@@ -89,8 +89,9 @@ constexpr uint32_t STALL_TIMEOUT_MS = 400;          // stall declared after this
 // brightness nudge, color-temp shifts) glide instead of snapping.
 constexpr float    LED_FADE_ANGLE_RAD      = 1.0f;  // angle over which LEDs ramp 0 → max
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT    = 200;   // 0..255 (single-click brightness-mode nudges this)
+constexpr uint8_t  LED_MAX_DUTY_MIN        = 16;    // floor — below this the gamma curve effectively produces 0 duty and the lamp goes permanently dark; also lets the user recover via a single knob nudge after a factory reset if NVS ever saved something absurdly low
 constexpr uint8_t  LED_MAX_DUTY_STEP       = 8;     // knob nudge size in brightness mode (perceptual, pre-gamma)
-constexpr uint8_t  LED_FADE_STEP           = 1;     // duty units per fade tick (1 = smoothest)
+constexpr uint8_t  LED_FADE_STEP           = 3;     // duty units per fade tick — 1 was visually smoothest but brightness-mode knob changes took ~2.5 s to finish, 3 still looks smooth at ≈ 0.85 s for a full range sweep
 constexpr uint32_t LED_FADE_PERIOD_MS      = 10;    // ms between fade ticks
 constexpr float    LED_GAMMA               = 2.2f;  // perceptual curve on max_duty — evenly-spaced knob steps feel equal
 constexpr uint16_t CT_MIN_MIREDS           = 153;   // Matter ColorTemperatureLight range

@@ -86,11 +86,15 @@ void leds_init() {
     ledcWrite(PIN_LED_WW, 0);
     ledcWrite(PIN_LED_CW, 0);
 
-    // Restore persisted brightness from the last session.
+    // Restore persisted brightness from the last session. Floor at MIN so a
+    // bogus / accidentally-zeroed saved value can't leave the lamp permanently
+    // dark — one knob nudge will then bring it up to a visible level.
     nvs_handle_t h;
     if (nvs_open(LED_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t saved = 0;
-        if (nvs_get_u8(h, LED_NVS_KEY_DUTY, &saved) == ESP_OK) s_max_duty = saved;
+        if (nvs_get_u8(h, LED_NVS_KEY_DUTY, &saved) == ESP_OK) {
+            s_max_duty = (saved >= LED_MAX_DUTY_MIN) ? saved : LED_MAX_DUTY_DEFAULT;
+        }
         nvs_close(h);
     }
 }
@@ -119,8 +123,8 @@ void leds_set_max_duty(uint8_t duty)         { s_max_duty = duty; }
 uint8_t leds_get_max_duty()                  { return s_max_duty; }
 void leds_nudge_max_duty(int16_t delta) {
     int32_t nd = (int32_t)s_max_duty + delta;
-    if (nd < 0)    nd = 0;
-    if (nd > 255)  nd = 255;
+    if (nd < (int32_t)LED_MAX_DUTY_MIN) nd = LED_MAX_DUTY_MIN;  // floor, see config.h
+    if (nd > 255)                       nd = 255;
     s_max_duty = (uint8_t)nd;
     s_duty_save_pending_ms = millis();
 }
@@ -154,32 +158,54 @@ void leds_start_fader() {
     xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 3072, nullptr, 2, nullptr, CORE_OTHERS);
 }
 
-// Pulse: N cycles of fade-down-from-current → pause → fade-up-to-saved → pause. 20
-// steps per fade × 8 ms = 160 ms fade + 80 ms pause. Matches the CylinderLamp feel
-// (CylinderLamp.ino:119-137 in the sibling project).
+// Pulse: N cycles of 0 → peak → 0 at the current max_duty × colortemp. Unlike
+// CylinderLamp's from-current pattern, peak here is independent of shaft angle
+// so the feedback blink is equally visible whether the lamp is on or off. 160 ms
+// ramp each way + 80 ms dwell. On exit the pins are at 0 and the fader resumes
+// from there on its next tick, ramping up to whatever target the angle curve wants.
 static void leds_pulse_task(void *param) {
     uint8_t count = (uint8_t)(uintptr_t)param;
-    uint8_t start_ww = s_current_ww;
-    uint8_t start_cw = s_current_cw;
+    uint8_t flash_ww = 0, flash_cw = 0;
+    ct_to_targets(s_colortemp, gamma_correct(s_max_duty), &flash_ww, &flash_cw);
+
+    // Two-state alternation centered on the current visual state:
+    //   lamp-off  (a=0):     flash 0 → peak → 0 × count
+    //   lamp-lit  (a=cur):   blink cur → 0 → cur × count
+    // End state always matches the start state, so the fader has nothing to
+    // re-ramp and the user sees exactly `count` symmetric feedback blinks.
+    uint8_t a_ww = s_current_ww;
+    uint8_t a_cw = s_current_cw;
+    uint8_t b_ww, b_cw;
+    if (a_ww == 0 && a_cw == 0) {
+        b_ww = flash_ww; b_cw = flash_cw;   // lamp off → flash to peak and back
+    } else {
+        b_ww = 0;        b_cw = 0;          // lamp on → blink off and back
+    }
+
     s_pulse_active = true;
 
     for (uint8_t i = 0; i < count; i++) {
-        for (int s = 20; s >= 0; s--) {
-            ledcWrite(PIN_LED_WW, (uint8_t)((uint32_t)start_ww * (uint32_t)s / 20));
-            ledcWrite(PIN_LED_CW, (uint8_t)((uint32_t)start_cw * (uint32_t)s / 20));
+        for (int s = 0; s <= 20; s++) {                  // a → b
+            uint32_t w = ((uint32_t)a_ww * (20 - s) + (uint32_t)b_ww * s) / 20;
+            uint32_t c = ((uint32_t)a_cw * (20 - s) + (uint32_t)b_cw * s) / 20;
+            ledcWrite(PIN_LED_WW, (uint8_t)w);
+            ledcWrite(PIN_LED_CW, (uint8_t)c);
             vTaskDelay(pdMS_TO_TICKS(8));
         }
         vTaskDelay(pdMS_TO_TICKS(80));
-        for (int s = 0; s <= 20; s++) {
-            ledcWrite(PIN_LED_WW, (uint8_t)((uint32_t)start_ww * (uint32_t)s / 20));
-            ledcWrite(PIN_LED_CW, (uint8_t)((uint32_t)start_cw * (uint32_t)s / 20));
+        for (int s = 0; s <= 20; s++) {                  // b → a
+            uint32_t w = ((uint32_t)b_ww * (20 - s) + (uint32_t)a_ww * s) / 20;
+            uint32_t c = ((uint32_t)b_cw * (20 - s) + (uint32_t)a_cw * s) / 20;
+            ledcWrite(PIN_LED_WW, (uint8_t)w);
+            ledcWrite(PIN_LED_CW, (uint8_t)c);
             vTaskDelay(pdMS_TO_TICKS(8));
         }
         vTaskDelay(pdMS_TO_TICKS(80));
     }
 
-    s_current_ww = start_ww;
-    s_current_cw = start_cw;
+    // End at the original state — no tail fade, no snap.
+    s_current_ww = a_ww;
+    s_current_cw = a_cw;
     s_pulse_active = false;
     vTaskDelete(nullptr);
 }
