@@ -1,5 +1,7 @@
-// M3-leds: motor + knob + LEDs. LED brightness comes from motor shaft angle (lamp
-// raised → lit, lamp down → dark) at a fixed 50/50 warm/cool mix. No Matter yet.
+// M3-leds: motor + knob + LEDs. Adds CylinderLamp's control feel — single-click
+// toggles brightness mode (knob → LED max duty), double-click cycles
+// MOTION_VELOCITY presets with a feedback pulse, 9 s hold clears NVS + reboots.
+// LEDs fade smoothly to/from the knob-driven on/off state.
 
 #include <Arduino.h>
 #include <esp_log.h>
@@ -23,14 +25,15 @@ extern "C" void app_main() {
     delay(500);
 
     printf("\n=== BrushlessLamp M3-leds (S3) ===\n");
-    printf("LED on when shaft > %.1f rad, 50/50 warm/cool at duty=%u\n",
-           LED_ON_ANGLE_THRESH, (unsigned)LED_DUTY);
+    printf("LED curve: 0..%.2f rad linear ramp → γ=%.1f perceptual; max_duty=%u; CT=%u\n",
+           LED_FADE_ANGLE_RAD, LED_GAMMA, (unsigned)LED_MAX_DUTY_DEFAULT, (unsigned)COLORTEMP_DEFAULT);
+    printf("Button: click → brightness mode; 2× → speed cycle; 9 s → factory reset\n");
 
     input_init();
     input_task_start();
     motor_init_and_start();
     leds_init();
-    leds_start_angle_follower();
+    leds_start_fader();
 
     vTaskDelete(nullptr);
 }

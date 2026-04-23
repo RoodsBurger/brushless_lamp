@@ -50,6 +50,10 @@ static void          (*s_settle_cb)(float) = nullptr;
 static volatile float  s_manual_vel    = 0.0f;
 static volatile bool   s_manual_mode   = false;
 
+// Runtime MOTION_VELOCITY (writable via double-click speed cycling). Initialised from
+// config.h default; motor_set_motion_velocity() clamps to (0, VELOCITY_LIMIT].
+static volatile float  s_motion_velocity = MOTION_VELOCITY;
+
 static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
 static void IRAM_ATTR doMotorB() { s_encoder.handleB(); }
 
@@ -70,8 +74,9 @@ static float clampf(float v, float lo, float hi) {
 
 static void motor_foc_task(void *) {
     // Encoder ISRs must attach from this task so they register on CORE_MOTOR.
-    s_encoder.quadrature = Quadrature::ON;
-    s_encoder.pullup     = Pullup::USE_INTERN;
+    s_encoder.quadrature       = Quadrature::ON;
+    s_encoder.pullup           = Pullup::USE_INTERN;
+    s_encoder.min_elapsed_time = SENSOR_MIN_ELAPSED_TIME;   // gate velocity reads vs encoder quantization
     s_encoder.init();
     s_encoder.enableInterrupts(doMotorA, doMotorB);
     s_motor.linkSensor(&s_encoder);
@@ -81,7 +86,7 @@ static void motor_foc_task(void *) {
     delay(2);
 
     s_driver.voltage_power_supply = SUPPLY_VOLTAGE;
-    s_driver.voltage_limit        = SUPPLY_VOLTAGE;
+    s_driver.voltage_limit        = VOLTAGE_LIMIT;    // hardware-specific cap (see config.h)
     s_driver.pwm_frequency        = PWM_FREQ_HZ;
     printf("[motor] driver.init()=%d\n", s_driver.init());
     s_motor.linkDriver(&s_driver);
@@ -90,6 +95,7 @@ static void motor_foc_task(void *) {
     s_motor.KV_rating            = KV_RATING;
     s_motor.current_limit        = CURRENT_LIMIT;
     s_motor.velocity_limit       = VELOCITY_LIMIT;
+    s_motor.voltage_limit        = VOLTAGE_LIMIT;       // Uq cap — PID_velocity.limit follows this
     s_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
     s_motor.controller           = MotionControlType::velocity;
     s_motor.torque_controller    = TorqueControlType::voltage;
@@ -149,10 +155,11 @@ static void motor_foc_task(void *) {
 
         // Manual-velocity mode — keeps the same trapezoidal ramp (MOTION_ACCEL) as the
         // production position loop, but takes the target velocity directly from the
-        // app instead of deriving it from pos_err. Motor still idle-disables when
-        // commanded_vel + shaft_velocity both hit zero, so exiting by calling
-        // motor_run_at_velocity(0.0f) decelerates cleanly and then cuts PWM.
-        if (s_manual_mode || (s_manual_vel == 0.0f && fabsf(commanded_vel) > VEL_AT_REST_EPS)) {
+        // app instead of deriving it from pos_err. Only enters on s_manual_mode: the
+        // older "also run if commanded_vel hasn't fully decayed" fallthrough caused
+        // angle-only stages (M3/M4) to ping-pong between branches whenever the
+        // position loop was commanding a non-trivial velocity.
+        if (s_manual_mode) {
             float dt_m = (last_ramp_us == 0) ? 0.0f : (now_us - last_ramp_us) * 1e-6f;
             last_ramp_us = now_us;
             if (dt_m > 0.0f && dt_m < 0.1f) {
@@ -200,13 +207,12 @@ static void motor_foc_task(void *) {
 
         float pos_err = s_target_angle - s_motor.shaft_angle;
 
-        // Combined desired velocity: min(linear asymptote, physics-bounded brake, MOTION_VELOCITY).
-        // Near target the linear term dominates so velocity decays smoothly to 0; mid-approach
-        // the physics term (sqrt(2·a·|err|)) guarantees we can brake to a stop in time; far
-        // away MOTION_VELOCITY caps the slew.
-        float linear_v    = P_POSITION * fabsf(pos_err);
+        // Pure physics-bounded trapezoidal — desired speed at distance `err` is the
+        // highest value we can still brake to zero from, given MOTION_ACCEL. Capping
+        // by MOTION_VELOCITY gives the textbook accel/cruise/decel profile; no linear
+        // term near target, so motion stays fast until the last few ticks.
         float brake_v     = sqrtf(2.0f * MOTION_ACCEL * fabsf(pos_err));
-        float desired_mag = fminf(fminf(MOTION_VELOCITY, linear_v), brake_v);
+        float desired_mag = fminf(s_motion_velocity, brake_v);
         float desired_raw = (pos_err >= 0.0f) ? desired_mag : -desired_mag;
 
         // Brake-on-reverse: opposite-direction target forces commanded through zero before
@@ -298,3 +304,10 @@ void motor_run_at_velocity(float rad_per_sec) {
 float motor_get_target_angle()   { return s_target_angle; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }
 float motor_get_shaft_velocity() { return s_shaft_velocity_cached; }
+
+void motor_set_motion_velocity(float rad_per_sec) {
+    if (rad_per_sec <= 0.0f) { s_motion_velocity = MOTION_VELOCITY; return; }
+    if (rad_per_sec >  VELOCITY_LIMIT) rad_per_sec = VELOCITY_LIMIT;
+    s_motion_velocity = rad_per_sec;
+}
+float motor_get_motion_velocity() { return s_motion_velocity; }

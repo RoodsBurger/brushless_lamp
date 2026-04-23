@@ -33,3 +33,9 @@ void  motor_request_matter_sync_on_settle();
 // constant speeds (the position loop caps at MOTION_VELOCITY and ramps). Pass 0.0f
 // to exit and return to position control + idle-disable.
 void  motor_run_at_velocity(float rad_per_sec);
+
+// Runtime MOTION_VELOCITY override — double-click cycling uses this to swap
+// speed presets at runtime without rebuilding. A value ≤ 0 restores the config.h
+// default. Clamped to (0, VELOCITY_LIMIT] internally.
+void  motor_set_motion_velocity(float rad_per_sec);
+float motor_get_motion_velocity();
