@@ -34,7 +34,9 @@ constexpr float ANGLE_MAX          = 10.0f * 6.2831853f;  // 10 motor rotations 
 constexpr float MOTION_VELOCITY    = 25.0f;         // rad/s top slew
 constexpr float MOTION_ACCEL       = 10.0f;         // rad/s² — M2's TARGET_ACCEL_DEFAULT
 constexpr float P_POSITION         = 3.0f;         // position→velocity gain (linear term)
-constexpr float KNOB_STEP_RAD      = 1.0f;         // each detent nudges target by this
+constexpr float KNOB_STEP_RAD         = 1.0f;      // each detent nudges angle target by this (unused in M2 velocity-nudge)
+constexpr float KNOB_STEP_RAD_PER_SEC = 10.0f;     // M2 velocity-nudge — each detent ±10 rad/s
+constexpr float KNOB_VEL_MAX_RAD_PER_SEC = 50.0f;  // M2 velocity-nudge — clamp |target| to this
 
 // Idle-disable: motor stays enabled while moving, disables after IDLE_DISABLE_MS of
 // rest (commanded_vel + shaft_velocity + |pos_err| all near zero). While disabled we

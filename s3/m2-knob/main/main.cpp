@@ -23,7 +23,8 @@ extern "C" void app_main() {
     delay(500);
 
     printf("\n=== BrushlessLamp M2-knob (S3) ===\n");
-    printf("knob: ±%.2f rad per detent, button → target=0\n", KNOB_STEP_RAD);
+    printf("knob: ±%.1f rad/s per detent (cap ±%.0f), button → 0 rad/s\n",
+           KNOB_STEP_RAD_PER_SEC, KNOB_VEL_MAX_RAD_PER_SEC);
 
     input_init();              // attach knob/button on core 0
     input_task_start();         // 10 Hz poll, CORE_OTHERS

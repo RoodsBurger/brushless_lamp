@@ -1,5 +1,9 @@
-// M2 — quadrature knob + debounced button, Arduino-API style. Each full detent
-// nudges motor_target_angle by ±KNOB_STEP_RAD; the button snaps target back to 0.
+// M2 — quadrature knob + debounced button, Arduino-API style. Velocity-nudge
+// mode: each full detent adds ±KNOB_STEP_RAD_PER_SEC to the motor's target
+// velocity (clamped to ±KNOB_VEL_MAX_RAD_PER_SEC); the button snaps velocity
+// back to 0. Drives motor_run_at_velocity() which bypasses the position loop
+// and lets SimpleFOC's velocity PID track directly (still with the same
+// MOTION_ACCEL trapezoidal ramp in motor.cpp).
 // Lives on core 0 alongside arduino-esp32 event tasks so the encoder ISRs don't
 // touch the motor FOC loop running on core 1.
 
@@ -42,6 +46,8 @@ static bool button_pressed() {
     return false;
 }
 
+static float s_target_vel = 0.0f;
+
 static void input_task(void *) {
     while (true) {
         int32_t delta;
@@ -51,15 +57,18 @@ static void input_task(void *) {
         portENABLE_INTERRUPTS();
 
         if (delta) {
-            motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
-            motor_request_matter_sync_on_settle();   // harmless in M2: no callback registered
-            printf("[input] knob %+ld -> target=%.2f rad\n",
-                   (long)delta, motor_get_target_angle());
+            s_target_vel += (float)delta * KNOB_STEP_RAD_PER_SEC;
+            if (s_target_vel >  KNOB_VEL_MAX_RAD_PER_SEC) s_target_vel =  KNOB_VEL_MAX_RAD_PER_SEC;
+            if (s_target_vel < -KNOB_VEL_MAX_RAD_PER_SEC) s_target_vel = -KNOB_VEL_MAX_RAD_PER_SEC;
+            motor_run_at_velocity(s_target_vel);
+            printf("[input] knob %+ld -> target_vel=%.1f rad/s\n",
+                   (long)delta, s_target_vel);
         }
 
         if (button_pressed()) {
-            motor_set_target_angle(0.0f);
-            printf("[input] button -> target=0 rad\n");
+            s_target_vel = 0.0f;
+            motor_run_at_velocity(0.0f);
+            printf("[input] button -> target_vel=0 rad/s\n");
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
