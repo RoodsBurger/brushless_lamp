@@ -64,9 +64,10 @@ static void input_task(void *) {
         if (delta) {
             motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
             motor_enable();   // any knob activity implies "I want the lamp moving"
-            // Push the new target back to Matter so the controller app's slider
-            // follows the knob instead of showing a stale value.
-            matter_push_level_from_angle(motor_get_target_angle());
+            // Don't push to Matter on every detent — the echo through
+            // attribute_update_cb was the knob choppiness. Let motor_foc_task push
+            // once on deadband entry (post-settle).
+            motor_request_matter_sync_on_settle();
             printf("knob %+ld -> target=%.2f rad\n",
                    (long)delta, motor_get_target_angle());
         }

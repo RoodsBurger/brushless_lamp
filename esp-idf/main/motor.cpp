@@ -1,20 +1,22 @@
-// Phase 14c — position control via SimpleFOC *velocity* mode + an app-layer P controller.
-// Rationale: M2-knob's silent tuning is in velocity mode (PID_velocity P=0.2 I=20,
-// LPF_velocity.Tf=0.02, motion_downsample=5). SimpleFOC's angle mode re-tunes the
-// inner loop and tends to be louder on the C6. So we keep the velocity loop that's
-// known-quiet and add our own cascade outside:
+// Phase 14c — position control via SimpleFOC velocity mode (M2-proven quiet) plus an
+// app-layer linear+physics profile closing the position loop. Matches M2-knob's idle
+// pattern: motor stays enabled while commanded_vel is nonzero or the shaft is moving,
+// then disables after IDLE_DISABLE_MS of rest — AND we stop calling motor.move() once
+// disabled, so phases stay at 0 (motor.disable() only issues one setPwm(0,0,0); without
+// the skip, the next move() re-drives the bridges via the velocity PID).
 //
-//     position_error = target_angle - shaft_angle
-//     desired_vel    = clamp(P_POSITION × position_error, ± MOTION_VELOCITY)
-//     commanded_vel  = commanded_vel ±= MOTION_ACCEL·dt   (ramp toward desired_vel)
-//     motor.move(commanded_vel)
+// Position loop:
+//     pos_err = target - shaft_angle
+//     desired_mag = min( MOTION_VELOCITY,
+//                        P_POSITION · |pos_err|,    (linear — smooth asymptote)
+//                        sqrt(2 · MOTION_ACCEL · |pos_err|) )  (physics — no overshoot)
+//     desired_raw = sign(pos_err) · desired_mag
+//     brake-on-reverse: if desired_raw opposes commanded_vel direction, force 0 first
+//     commanded_vel = ramp(commanded_vel, desired_vel, MOTION_ACCEL · dt)
 //
-// At the target the error → 0 so desired_vel → 0; the ramp brings commanded_vel to 0
-// with a bounded deceleration. No abrupt start/stop, motor runs M2-silent gains.
-//
-// EN on the DRV8313 is hardwired to 3V3, so motor.disable() just zeroes PWM (grounds
-// all phases → no holding torque). We auto-disable IDLE_DISABLE_MS after reaching the
-// target so the lamp isn't chattering at rest.
+// At the target the linear term dominates so commanded_vel asymptotically decays to
+// zero — no "snap" at any deadband boundary because there isn't one. Disable is time-
+// driven (at_rest for IDLE_DISABLE_MS), not position-driven.
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
@@ -24,6 +26,7 @@
 #include <math.h>
 
 #include "motor.h"
+#include "matter_app.h"
 #include "config.h"
 #include "pins.h"
 
@@ -34,16 +37,12 @@ static BLDCDriver3PWM  s_driver (PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
 static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
 
 static volatile float  s_target_angle  = 0.0f;
-static volatile bool   s_want_motion   = false;
+static volatile bool   s_want_motion   = false;   // informational; unused by the loop
 static volatile float  s_shaft_angle_cached    = 0.0f;
 static volatile float  s_shaft_velocity_cached = 0.0f;
+static volatile bool   s_sync_pending  = false;   // knob asked for post-settle Matter push
 
-// At-target tolerance generous on purpose — for a 360-revolution lamp (2262 rad total
-// travel) 2 rad is ~0.09 % of the range; well inside "nobody will notice" and it lets
-// the motor give up position-chase quickly so idle-disable fires. Rest detection uses
-// commanded-vel only; shaft_velocity jitters forever while the velocity PID is active.
-static constexpr float ANGLE_AT_TARGET_EPS = 2.0f;
-static constexpr float VEL_AT_REST_EPS     = 0.1f;  // rad/s — applied to commanded_vel
+static constexpr float VEL_AT_REST_EPS = 0.1f;    // rad/s — idle-disable threshold
 
 static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
 static void IRAM_ATTR doMotorB() { s_encoder.handleB(); }
@@ -60,31 +59,17 @@ static float clampf(float v, float lo, float hi) {
     return v;
 }
 
-static void resetDriver() {
-    s_motor.disable();
-    // Flush PID + cached sensor state so re-enable doesn't kick a step out of stale
-    // integral. M2-knob learned this the hard way — same pattern adapted for this loop.
-    s_motor.PID_velocity.reset();
-    s_motor.shaft_velocity = 0.0f;
-    digitalWrite(PIN_NSP, LOW);
-    delayMicroseconds(50);
-    digitalWrite(PIN_NSP, HIGH);
-    delay(2);
-    s_motor.enable();
-}
-
 #define FX_HI(v, scale) ((long)((int32_t)((v) * (scale)) / (scale)))
 #define FX_LO(v, scale) ((long)((((int32_t)((v) * (scale))) < 0 ? -((int32_t)((v) * (scale))) : ((int32_t)((v) * (scale)))) % (scale)))
 
 static void motor_foc_task(void *) {
-    float    commanded_vel     = 0.0f;   // what we pass to motor.move()
-    uint32_t last_ramp_us      = 0;
-    uint32_t prev_loop_us      = 0;
-    uint32_t max_loop_us       = 0;
-    uint32_t last_print_ms     = 0;
-    uint32_t last_active_ms    = 0;
-    float    last_target       = s_target_angle;
-    uint32_t iter              = 0;
+    float    commanded_vel   = 0.0f;
+    uint32_t last_ramp_us    = 0;
+    uint32_t prev_loop_us    = 0;
+    uint32_t max_loop_us     = 0;
+    uint32_t last_print_ms   = 0;
+    uint32_t last_active_ms  = 0;
+    uint32_t iter            = 0;
 
     while (true) {
         uint32_t now_us = micros();
@@ -94,30 +79,23 @@ static void motor_foc_task(void *) {
         }
         prev_loop_us = now_us;
 
-        // App-level position loop — physics-based trapezoidal profile:
-        //
-        //     max_safe_vel = sqrt(2 · MOTION_ACCEL · |pos_err|)
-        //
-        // is the fastest we can move right now and still decelerate to 0 exactly at
-        // the target given our accel limit. Clamping desired_vel to this guarantees
-        // no overshoot. A linear P-controller was stopping far too late for the 25
-        // rad/s approach velocity (brake distance = 31 rad with accel=10). The direction
-        // sign comes from pos_err. A brake-first reversal detector still sits on top so
-        // a mid-motion slider flip doesn't try to jump into the new direction before
-        // commanded_vel has decelerated.
-        float pos_err     = s_target_angle - s_motor.shaft_angle;
+        float pos_err = s_target_angle - s_motor.shaft_angle;
+
+        // Combined desired velocity: min(linear, physics, MAX).
+        float linear_v    = P_POSITION * fabsf(pos_err);
         float brake_v     = sqrtf(2.0f * MOTION_ACCEL * fabsf(pos_err));
-        float desired_mag = fminf(MOTION_VELOCITY, brake_v);
+        float desired_mag = fminf(fminf(MOTION_VELOCITY, linear_v), brake_v);
         float desired_raw = (pos_err >= 0.0f) ? desired_mag : -desired_mag;
 
-        const float MOTION_EPS = 0.5f;   // rad/s — consider this "stopped"
+        // Brake-on-reverse — the only direction-sensitive rule. Same-sign updates
+        // flow through the ramp normally; opposite-sign force through zero first.
+        const float MOTION_EPS = 0.5f;
         bool currently_fwd = commanded_vel >  MOTION_EPS;
         bool currently_rev = commanded_vel < -MOTION_EPS;
         bool want_fwd      = desired_raw   >  MOTION_EPS;
         bool want_rev      = desired_raw   < -MOTION_EPS;
         bool reversing     = (want_fwd && currently_rev) || (want_rev && currently_fwd);
-
-        float desired_vel = reversing ? 0.0f : desired_raw;
+        float desired_vel  = reversing ? 0.0f : desired_raw;
 
         float dt = (last_ramp_us == 0) ? 0.0f : (now_us - last_ramp_us) * 1e-6f;
         last_ramp_us = now_us;
@@ -127,62 +105,56 @@ static void motor_foc_task(void *) {
             else if (commanded_vel >  desired_vel + step) commanded_vel -= step;
             else                                          commanded_vel  = desired_vel;
         } else {
-            commanded_vel = desired_vel;  // first sample or long gap → snap
+            commanded_vel = desired_vel;
         }
 
-        // Activity tracking for idle auto-disable: "active" = target just changed, or
-        // we're still commanding non-trivial velocity, or we're not at target.
-        bool at_target  = fabsf(pos_err) < ANGLE_AT_TARGET_EPS;
-        // Don't include shaft_velocity in "at rest" — it jitters indefinitely while
-        // the velocity PID is actively holding 0, which blocked idle-disable. cmd_vel
-        // is our own ramped output and drops cleanly to 0 when the position error is
-        // inside ANGLE_AT_TARGET_EPS.
-        bool at_rest    = fabsf(commanded_vel) < VEL_AT_REST_EPS;
-        if (s_target_angle != last_target) {
-            last_target    = s_target_angle;
-            last_active_ms = millis();
-        }
-        if (!at_target || !at_rest) last_active_ms = millis();
+        // Idle-disable (M2 pattern): software command AND physical shaft both at rest
+        // AND we're already at target → start the timer. Target change (pos_err
+        // nonzero) immediately counts as active so the wake path doesn't stall for
+        // the 10 ms it takes the ramp to lift commanded_vel above VEL_AT_REST_EPS.
+        bool at_rest = fabsf(commanded_vel)            < VEL_AT_REST_EPS &&
+                       fabsf(s_motor.shaft_velocity)   < VEL_AT_REST_EPS &&
+                       fabsf(pos_err)                  < 0.1f;
+        if (!at_rest) last_active_ms = millis();
+        bool should_enable = (millis() - last_active_ms) < IDLE_DISABLE_MS;
 
-        bool should_enable;
-        if (!s_want_motion) {
-            should_enable = !at_target;      // still reaching 0
+        if (should_enable) {
+            if (!s_motor.enabled) s_motor.enable();
+            s_motor.loopFOC();
+            s_motor.move(commanded_vel);
         } else {
-            should_enable = !at_target || !at_rest ||
-                            (millis() - last_active_ms) < IDLE_DISABLE_MS;
+            // Just crossed into idle → cut PWM, flush PID + sensor cache, and if the
+            // last motion came from the knob, push the settled angle to Matter now.
+            if (s_motor.enabled) {
+                s_motor.disable();
+                s_motor.PID_velocity.reset();
+                s_motor.shaft_velocity = 0.0f;
+                commanded_vel = 0.0f;
+                if (s_sync_pending) {
+                    matter_push_level_from_angle(s_motor.shaft_angle);
+                    s_sync_pending = false;
+                }
+            }
+            // Don't call loopFOC/move while disabled — leaving the phases grounded
+            // is the whole point of the disable. The encoder ISR still updates
+            // shaft_angle in the background, so the next target change will see it.
         }
-
-        if (should_enable && !s_motor.enabled) {
-            resetDriver();
-            commanded_vel  = 0.0f;
-            last_active_ms = millis();
-        } else if (!should_enable && s_motor.enabled) {
-            s_motor.disable();
-            commanded_vel = 0.0f;
-        }
-
-        s_motor.loopFOC();
-        s_motor.move(commanded_vel);
 
         s_shaft_angle_cached    = s_motor.shaft_angle;
         s_shaft_velocity_cached = s_motor.shaft_velocity;
 
         if (millis() - last_print_ms >= PRINT_INTERVAL_MS) {
             last_print_ms = millis();
-            printf("tgt:%ld.%02ld ang:%ld.%02ld vel:%ld.%02ld cmd:%ld.%02ld en:%d wm:%d maxLp:%luus\n",
+            printf("tgt:%ld.%02ld ang:%ld.%02ld vel:%ld.%02ld cmd:%ld.%02ld en:%d maxLp:%luus\n",
                    FX_HI(s_target_angle,          100), FX_LO(s_target_angle,          100),
                    FX_HI(s_motor.shaft_angle,     100), FX_LO(s_motor.shaft_angle,     100),
                    FX_HI(s_motor.shaft_velocity,  100), FX_LO(s_motor.shaft_velocity,  100),
                    FX_HI(commanded_vel,           100), FX_LO(commanded_vel,           100),
                    (int)s_motor.enabled,
-                   (int)s_want_motion,
                    (unsigned long)max_loop_us);
             max_loop_us = 0;
         }
 
-        // Yield much more often than before — under Matter bursts single iterations can
-        // hit 15 ms, so the old every-256 yield let IDLE WDT fire. 32 iters ≈ 32 ms
-        // worst case, well under the 5 s WDT.
         if ((++iter & 0x1F) == 0) vTaskDelay(1);
     }
 }
@@ -204,14 +176,14 @@ void motor_init_and_start() {
     printf("driver.init()=%d\n", s_driver.init());
     s_motor.linkDriver(&s_driver);
 
-    // Motor-side tuning = M2-knob exact, the only configuration on this hardware
-    // confirmed silent + strong. Position control is layered on top in the task.
+    // M2-proven velocity-mode tuning (silent, strong). The position loop lives in
+    // the task on top of this.
     s_motor.phase_resistance     = PHASE_RESISTANCE;
     s_motor.KV_rating            = KV_RATING;
     s_motor.current_limit        = CURRENT_LIMIT;
     s_motor.velocity_limit       = VELOCITY_LIMIT;
     s_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
-    s_motor.controller           = MotionControlType::velocity;   // M2-proven
+    s_motor.controller           = MotionControlType::velocity;
     s_motor.torque_controller    = TorqueControlType::voltage;
     s_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
     s_motor.motion_downsample    = MOTION_DOWNSAMPLE;
@@ -222,6 +194,8 @@ void motor_init_and_start() {
     s_motor.PID_velocity.output_ramp = PID_OUTPUT_RAMP;
     s_motor.LPF_velocity.Tf          = LPF_TF;
 
+    s_motor.modulation_centered  = 1;
+
     printf("motor.init()=%d\n", s_motor.init());
 
     int foc_ok = s_motor.initFOC();
@@ -229,6 +203,7 @@ void motor_init_and_start() {
            foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
     if (!foc_ok) printf("FOC init failed\n");
 
+    // Start disabled. First target change wakes it up.
     s_motor.disable();
 
     xTaskCreate(motor_foc_task, "motor_foc", 8192, nullptr, 5, nullptr);
@@ -238,6 +213,7 @@ void motor_enable()                         { s_want_motion = true; }
 void motor_disable()                        { s_want_motion = false; }
 void motor_set_target_angle(float rad)      { s_target_angle = clamp_angle(rad); }
 void motor_nudge_target_angle(float d_rad)  { s_target_angle = clamp_angle(s_target_angle + d_rad); }
+void motor_request_matter_sync_on_settle()  { s_sync_pending = true; }
 
 float motor_get_target_angle()    { return s_target_angle; }
 float motor_get_shaft_angle()     { return s_shaft_angle_cached; }

@@ -58,28 +58,53 @@ extern "C" bool matter_get_on_off(void) {
     return s_on_off;
 }
 
-// Write a new CurrentLevel to the Matter endpoint so controller apps (Google Home,
-// Apple Home) show the slider where the knob moved it. Update-by-report loop-back
-// fires attribute_update_cb again, so we guard against re-entry by short-circuiting
-// apply_state when the incoming value matches what we just pushed.
+// Marshal a Matter attribute::update() call onto the CHIP task. Calling it from
+// arbitrary FreeRTOS tasks (like input_task) silently drops the report-to-subscribers
+// step — Google Home's slider stops tracking the physical knob.
+namespace {
+struct LevelPush { uint16_t ep; uint8_t level; bool also_on; };
+}
+static void matter_push_level_work(intptr_t arg) {
+    LevelPush *p = reinterpret_cast<LevelPush *>(arg);
+    // LevelControl::CurrentLevel is declared nullable in esp_matter's data model
+    // (its bounds are registered with esp_matter_nullable_uint8). Passing the
+    // non-nullable variant returns ESP_ERR_INVALID_ARG (258) silently — that's why
+    // every knob push was dropped and Google Home never saw the update.
+    esp_matter_attr_val_t v = esp_matter_nullable_uint8(p->level);
+    esp_err_t r = attribute::update(p->ep, LevelControl::Id,
+                                    LevelControl::Attributes::CurrentLevel::Id, &v);
+    if (r != ESP_OK) ESP_LOGE(TAG, "level update failed: %d", r);
+    if (p->also_on) {
+        esp_matter_attr_val_t vo = esp_matter_bool(true);
+        r = attribute::update(p->ep, OnOff::Id, OnOff::Attributes::OnOff::Id, &vo);
+        if (r != ESP_OK) ESP_LOGE(TAG, "onoff update failed: %d", r);
+    }
+    delete p;
+}
+
 extern "C" void matter_push_level_from_angle(float angle_rad) {
     if (s_light_endpoint_id == 0) return;
     if (angle_rad < 0.0f) angle_rad = 0.0f;
     if (angle_rad > ANGLE_MAX) angle_rad = ANGLE_MAX;
-    uint8_t new_level = (uint8_t)((angle_rad / ANGLE_MAX) * 254.0f);
+    int lv = (int)((angle_rad / ANGLE_MAX) * 254.0f);
+    // Matter LevelControl::CurrentLevel is constrained to [MinLevel=1, MaxLevel=254].
+    // Pushing 0 comes back as ESP_ERR_INVALID_ARG (258) and the write is dropped —
+    // which was exactly why Google Home never reflected the knob. Always clamp.
+    if (lv < 1)   lv = 1;
+    if (lv > 254) lv = 254;
+    uint8_t new_level = (uint8_t)lv;
     if (new_level == s_level) return;
-    s_level = new_level;
 
-    esp_matter_attr_val_t val = esp_matter_uint8(new_level);
-    attribute::update(s_light_endpoint_id, LevelControl::Id,
-                      LevelControl::Attributes::CurrentLevel::Id, &val);
-    // Also nudge OnOff to true so the app shows the lamp as "on" after a physical turn.
-    if (!s_on_off) {
-        s_on_off = true;
-        esp_matter_attr_val_t on_val = esp_matter_bool(true);
-        attribute::update(s_light_endpoint_id, OnOff::Id,
-                          OnOff::Attributes::OnOff::Id, &on_val);
-    }
+    bool also_on = !s_on_off;
+    s_level  = new_level;
+    if (also_on) s_on_off = true;
+
+    ESP_LOGI(TAG, "push: knob angle=%.2f → level=%u (%s)",
+             angle_rad, (unsigned)new_level, also_on ? "+OnOff=true" : "level-only");
+
+    LevelPush *p = new LevelPush{ s_light_endpoint_id, new_level, also_on };
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(matter_push_level_work,
+                                                  reinterpret_cast<intptr_t>(p));
 }
 
 static esp_err_t attribute_update_cb(attribute::callback_type_t type, uint16_t endpoint_id,
@@ -90,15 +115,22 @@ static esp_err_t attribute_update_cb(attribute::callback_type_t type, uint16_t e
     if (type != POST_UPDATE) return ESP_OK;
     if (endpoint_id != s_light_endpoint_id) return ESP_OK;
 
+    // Echo suppression: matter_push_level_from_angle updates s_level before scheduling
+    // the attribute::update that eventually triggers us. When that happens the incoming
+    // value matches s_level exactly; re-running apply_state would kick the motor at a
+    // round-tripped target, which felt like a bump after every knob detent.
     if (cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id) {
+        if (val->val.b == s_on_off) return ESP_OK;
         s_on_off = val->val.b;
         apply_state();
     } else if (cluster_id == LevelControl::Id &&
                attribute_id == LevelControl::Attributes::CurrentLevel::Id) {
+        if (val->val.u8 == s_level) return ESP_OK;
         s_level = val->val.u8;
         apply_state();
     } else if (cluster_id == ColorControl::Id &&
                attribute_id == ColorControl::Attributes::ColorTemperatureMireds::Id) {
+        if (val->val.u16 == s_color_temp_mireds) return ESP_OK;
         s_color_temp_mireds = val->val.u16;
         apply_state();
     }

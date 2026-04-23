@@ -17,3 +17,9 @@ void  motor_nudge_target_angle(float d_rad); // knob-driven relative tweak
 float motor_get_target_angle();
 float motor_get_shaft_angle();
 float motor_get_shaft_velocity();
+
+// Ask the motor task to push the post-settle shaft angle back to Matter the next time
+// the deadband is entered. Called from input.cpp when the user turns the knob —
+// pushing on every detent creates an echo loop via attribute_update_cb that the knob
+// sees as mid-movement rewind. Deferring to settle avoids that round trip.
+void  motor_request_matter_sync_on_settle();

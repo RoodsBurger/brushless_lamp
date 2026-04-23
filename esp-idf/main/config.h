@@ -54,13 +54,19 @@ constexpr float    KNOB_STEP_RAD        = 1.0f;     // each detent moves target 
 // velocity naturally decays → soft stop.
 constexpr float    MOTION_VELOCITY      = 25.0f;    // rad/s top speed
 constexpr float    MOTION_ACCEL         = 10.0f;    // rad/s² — M2-proven value, keeps audibility close to M2
-constexpr float    P_POSITION           = 3.0f;     // position→velocity gain (err=8.3 rad → vel=MOTION_VELOCITY)
+constexpr float    P_POSITION           = 3.0f;     // position→velocity gain (legacy, trap profile uses sqrt)
+
+// Hysteretic deadband — enter when we get very close so the trapezoidal profile's
+// approach velocity (sqrt(2·accel·err)) is already small at cutoff (less "snap" when
+// we stop commanding). Exit generously so shaft jitter doesn't restart the motor.
+constexpr float    DEADBAND_ENTER_RAD   = 0.5f;
+constexpr float    DEADBAND_EXIT_RAD    = 2.5f;
 constexpr uint8_t  LED_DUTY             = 128;      // fixed LED brightness when on (0..255)
 constexpr uint16_t CT_MIN_MIREDS        = 153;      // matches Matter ColorTemperatureLight
 constexpr uint16_t CT_MAX_MIREDS        = 500;
-// Must sit above ANGLE_AT_TARGET_EPS so a motor settled at target=0 (OnOff=off) is
-// guaranteed to be below this, and LEDs turn cleanly off. With eps=2 rad settling,
-// threshold=3 rad keeps the hysteresis comfortable.
-constexpr float    LED_ON_ANGLE_THRESH  = 3.0f;
+// No hard deadband in the motor loop now — shaft converges very close to target
+// via the linear profile. 0.5 rad is enough hysteresis that small jitter around 0
+// doesn't flicker the LED, and target=0 settles well below → lamp dark as expected.
+constexpr float    LED_ON_ANGLE_THRESH  = 0.5f;
 
 constexpr uint32_t BTN_DEBOUNCE_MS = 30;
