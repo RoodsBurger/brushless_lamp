@@ -27,10 +27,33 @@
 #include <setup_payload/ManualSetupPayloadGenerator.h>
 #include <setup_payload/SetupPayload.h>
 
+#include <nvs.h>
+
 #include "matter_app.h"
 #include "motor.h"
 #include "leds.h"
 #include "config.h"
+
+// esp_matter::factory_reset() only clears CHIP's namespaces (chip-config,
+// chip-counters, KVS). Our motor / LED / input namespaces stay put across
+// factory reset, which means the cached sensor_direction from a prior session
+// survives — and initFOC then skips the direction sweep on the next boot,
+// running only the 700 ms zero-angle pulse. On certain rotor resting positions
+// that short pulse alone isn't enough to finish alignment cleanly, so the
+// motor struggles post-reset. Wiping our NVS too forces a full re-calibration
+// on the next boot, which is what the user expects after a factory reset.
+static void wipe_local_nvs() {
+    const char * const namespaces[] = { "foc_cal", "leds", "input" };
+    for (const char *ns : namespaces) {
+        nvs_handle_t h;
+        if (nvs_open(ns, NVS_READWRITE, &h) != ESP_OK) continue;
+        nvs_erase_all(h);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+extern "C" void matter_wipe_local_nvs() { wipe_local_nvs(); }
 
 // Strong override of arduino-esp32's weak btInUse(): keeps initArduino() from
 // calling esp_bt_controller_mem_release(), which would free the BT controller's
@@ -105,6 +128,9 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
         ESP_LOGI(TAG, "fabric removed");
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+            // Remote decommission (Home app "Remove") — CHIP wipes its own
+            // NVS but not ours, so clear foc_cal / leds / input too.
+            wipe_local_nvs();
             auto &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
             if (!mgr.IsCommissioningWindowOpen()) {
                 mgr.OpenBasicCommissioningWindow(chip::System::Clock::Seconds16(300),

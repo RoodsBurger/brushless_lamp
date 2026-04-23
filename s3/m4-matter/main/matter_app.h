@@ -22,6 +22,13 @@ bool           matter_get_on_off(void);
 // the attribute is declared nullable in esp_matter's data model and passing the
 // non-nullable variant is silently rejected with ESP_ERR_INVALID_ARG (258).
 void matter_push_level_from_angle(float angle_rad);
+
+// Wipes foc_cal / leds / input NVS namespaces. esp_matter::factory_reset()
+// only touches CHIP's own namespaces, so call this right before it (on
+// button-hold factory reset) to guarantee the next boot runs a full motor
+// re-calibration. Automatically invoked on remote decommission via the
+// kFabricRemoved event.
+void matter_wipe_local_nvs(void);
 #ifdef __cplusplus
 }
 #endif

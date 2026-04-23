@@ -13,6 +13,7 @@
 #include "input.h"
 #include "motor.h"
 #include "leds.h"
+#include "matter_app.h"
 #include "config.h"
 #include "pins.h"
 
@@ -158,7 +159,8 @@ static void input_task(void *) {
                                        ESP_LOGW(TAG, "5 s hold — release to cancel, hold to 9 s for factory reset");
                                        break;
         case BtnEvent::FACTORY_RESET:  ESP_LOGW(TAG, "FACTORY RESET");
-                                       esp_matter::factory_reset();     // wipes fabric + KVS + reboots
+                                       matter_wipe_local_nvs();         // foc_cal / leds / input — not touched by esp_matter::factory_reset
+                                       esp_matter::factory_reset();     // wipes CHIP fabric + KVS, then esp_restart
                                        break;
         case BtnEvent::NONE:           break;
         }
