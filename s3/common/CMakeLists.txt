@@ -12,6 +12,7 @@ idf_component_register(
         driver
         esp_driver_mcpwm
         esp_driver_ledc
+        nvs_flash
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

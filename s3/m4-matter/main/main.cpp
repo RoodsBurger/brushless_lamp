@@ -1,6 +1,7 @@
 // M4-matter: full stack. Motor + knob + LEDs + Matter ColorTemperatureLight
 // endpoint. Commissions via Apple Home / Google Home over WiFi (BLE for pairing),
-// persists fabric across reboots, factory-resettable via 5 s knob-button hold.
+// persists fabric across reboots. Button: click → brightness mode, 2× → speed
+// cycle, 9 s hold → esp_matter::factory_reset.
 
 #include <Arduino.h>
 #include <esp_log.h>
@@ -30,14 +31,17 @@ extern "C" void app_main() {
     // clean update.
     motor_set_settle_callback(matter_push_level_from_angle);
 
-    input_init();
-    input_task_start();
-    motor_init_and_start();
+    // Order matters: Matter's BLE init runs on a clean heap. The busy-wait motor
+    // task on core 1 (with watchdog-delete) is noisy, so we bring it up after
+    // Matter is commissioned-ready.
     leds_init();
     matter_app_init();
-    leds_start_angle_follower();
+    leds_start_fader();
+    motor_init_and_start();
+    input_init();
+    input_task_start();
 
-    printf("Ready. Knob = +/-%.2f rad/detent. Hold button 5s for factory reset.\n",
+    printf("Ready. Knob = %.2f rad/detent | click=brightness | 2×=speed | 9s=factory reset\n",
            KNOB_STEP_RAD);
 
     vTaskDelete(nullptr);

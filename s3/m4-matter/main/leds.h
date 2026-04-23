@@ -2,11 +2,20 @@
 
 #include <stdint.h>
 
-// M4 LEDs — angle-driven on/off, warm/cool mix from Matter's ColorTemperatureMireds
-// attribute (read from matter_app's matter_get_color_temp_mireds() getter). The
-// follower task on core 0 polls motor_get_shaft_angle() at 10 Hz and writes LEDC
-// only on change, so there's minimal pressure on arduino-esp32 LEDC internals.
+// M4 CCT LED driver — shares the exact module contract with M3. Continuous angle
+// ramp (peak_for_angle), gamma-2.2 on max_duty, 10 ms fader on core 0, pulse task
+// for feedback. Matter attribute writes come in via leds_set_on() and
+// leds_set_colortemp() from matter_app.cpp; brightness-mode knob nudges via
+// leds_nudge_max_duty() from input.cpp. Intentionally identical to s3/m3-leds
+// so both stages stay in lockstep on LED behavior.
 
 void leds_init();
-void leds_set(uint8_t warm, uint8_t cool);
-void leds_start_angle_follower();
+void leds_start_fader();
+
+void leds_set_on(bool on);
+void leds_set_colortemp(uint16_t mireds);
+void leds_set_max_duty(uint8_t duty);
+uint8_t leds_get_max_duty();
+void leds_nudge_max_duty(int16_t delta);
+
+void leds_pulse(uint8_t count);

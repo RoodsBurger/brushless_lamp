@@ -18,7 +18,7 @@ constexpr float PHASE_RESISTANCE     = 5.0f;
 constexpr float KV_RATING            = 100.0f;
 constexpr float CURRENT_LIMIT        = 0.5f;
 constexpr float VELOCITY_LIMIT       = 50.0f;       // SimpleFOC's internal velocity cap
-constexpr float VOLTAGE_SENSOR_ALIGN = 3.0f;
+constexpr float VOLTAGE_SENSOR_ALIGN = 3.0f;   // M2-knob baseline — used once for initFOC (calibration is persisted to NVS so it only runs on first boot / after factory reset)
 // In TorqueControlType::voltage SimpleFOC caps Uq at VOLTAGE_LIMIT, not current_limit.
 // 6 V is the gimbal-example default but saturates the PID at our top 40 rad/s preset
 // (back-EMF ≈ 3.8 V + IR drop ≈ 2.5 V + headroom > 6). 12 V gives clean headroom at
@@ -70,6 +70,15 @@ constexpr uint8_t MOTION_VELOCITY_PRESET_DEFAULT = 0;
 constexpr uint32_t IDLE_DISABLE_MS  = 250;
 constexpr float    VEL_AT_REST_EPS  = 0.2f;         // rad/s
 constexpr float    POS_AT_REST_EPS  = 0.3f;         // rad
+
+// Stall detection — when the app commands motion but the physical shaft doesn't
+// follow (lamp hit its mechanical stop), accept the current position as the new
+// target and push it to Matter so the controller-side slider mirrors reality.
+// WARMUP skips the initial acceleration; TIMEOUT is how long shaft_vel must stay
+// below VEL_EPS before we declare stall.
+constexpr float    STALL_VEL_EPS    = 0.2f;         // rad/s
+constexpr uint32_t STALL_WARMUP_MS  = 800;          // grace period after motion starts
+constexpr uint32_t STALL_TIMEOUT_MS = 400;          // stall declared after this stuck time
 
 // LED behavior. Brightness is a continuous function of shaft angle — off at 0,
 // linearly ramping to full over the first LED_FADE_ANGLE_RAD of travel, then

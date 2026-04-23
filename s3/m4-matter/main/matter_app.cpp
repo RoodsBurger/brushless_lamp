@@ -22,11 +22,23 @@
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
+#include <setup_payload/OnboardingCodesUtil.h>
+#include <setup_payload/QRCodeSetupPayloadGenerator.h>
+#include <setup_payload/ManualSetupPayloadGenerator.h>
+#include <setup_payload/SetupPayload.h>
 
 #include "matter_app.h"
 #include "motor.h"
 #include "leds.h"
 #include "config.h"
+
+// Override arduino-esp32's weak btInUse() so initArduino() does NOT call
+// esp_bt_controller_mem_release(ESP_BT_MODE_BTDM). Without this, Arduino frees
+// the BT controller's own memory into the heap, then Matter's bt_controller_init
+// malloc's from that same internal-RAM pool and reads a corrupted TLSF header —
+// LoadProhibited during r_llm_env_init. Discovered via phase-15 research pass;
+// same fix that ESP Rainmaker uses when co-existing with Matter+NimBLE on S3.
+extern "C" bool btInUse(void) { return true; }
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -43,8 +55,18 @@ static uint8_t  s_level              = 1;    // Matter MinLevel
 static uint16_t s_color_temp_mireds  = 250;  // neutral daylight
 
 static void apply_state() {
-    // OnOff=off → target 0; motor slews home, LEDs darken once shaft drops below
-    // LED_ON_ANGLE_THRESH (that decision lives in leds.cpp's follower).
+    // Matter state → device state:
+    //   OnOff=false: just set motor target to 0. The LEDs follow shaft_angle
+    //     continuously via the angle curve, so they fade out WITH the physical
+    //     motion (kinetic "closing" feel) instead of snapping dark the instant
+    //     the Home app toggle flips.
+    //   OnOff=true:  motor target = (level / 254) × ANGLE_MAX, LEDs light via
+    //     angle curve as shaft climbs.
+    //   ColorTemp always mirrors Matter's ColorTemperatureMireds attribute.
+    // leds_set_on(true) is sticky (default) — we don't flip it here. The angle
+    // curve reaches 0 duty at shaft_angle=0 naturally, so an explicit hard kill
+    // isn't needed for the Matter off path.
+    leds_set_colortemp(s_color_temp_mireds);
     float target = s_on_off ? ((float)s_level / 254.0f) * ANGLE_MAX : 0.0f;
     motor_set_target_angle(target);
     ESP_LOGI(TAG, "apply: on=%d level=%u ct=%umir -> tgt=%.2frad",
@@ -133,11 +155,21 @@ void matter_app_init() {
     esp_err_t err = esp_matter::start(event_cb);
     if (err != ESP_OK) { ESP_LOGE(TAG, "esp_matter::start err=%d", err); return; }
 
-    // Dim warm-white "ready to pair" indicator while uncommissioned. Once the first
-    // OnOff write lands, leds.cpp's follower takes over.
+    // Print the exact commissioning payload so the user can paste it into their
+    // controller app. The chip's generator uses the factory-data-provider values,
+    // which for our current build (no production certs flashed) are Matter's test
+    // defaults — but we'd rather print the true values than assume them.
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-        leds_set(16, 8);
+        PrintOnboardingCodes(chip::RendezvousInformationFlag(chip::RendezvousInformationFlag::kBLE));
+    } else {
+        ESP_LOGI(TAG, "already commissioned (%u fabrics)",
+                 (unsigned)chip::Server::GetInstance().GetFabricTable().FabricCount());
     }
+
+    // Nothing special uncommissioned — the fader on its own will hold s_on=true
+    // (default) and the LED curve goes to 0 at shaft_angle=0, so the lamp sits
+    // dark until the user rotates the knob. That's a cleaner "ready to pair"
+    // state than the M3-era hard-coded 16/8 dim glow.
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();

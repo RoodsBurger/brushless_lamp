@@ -14,7 +14,6 @@ idf_component_register(
         chip
         esp_matter
         esp_matter_console
-        app_reset
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

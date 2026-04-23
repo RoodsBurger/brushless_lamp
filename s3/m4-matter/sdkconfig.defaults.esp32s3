@@ -5,15 +5,22 @@ CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
-## 8 MB flash + 8 MB Quad PSRAM on XIAO S3. PSRAM gives CHIP's cert cache and
-## cluster metadata somewhere to go without eating internal SRAM.
+## 8 MB flash. PSRAM deliberately off — the working C6 M4 reference has no PSRAM
+## and the BT controller allocates from INTERNAL|DMA capabilities regardless of
+## NIMBLE_MEM_ALLOC_MODE (bt.c:BLE_CONTROLLER_MALLOC_CAPS pins it), so PSRAM never
+## helps the bt_controller_init path. The real BLE-init crash we hit was not a
+## memory shortage but Arduino's initArduino() calling esp_bt_controller_mem_release
+## before Matter comes up — fixed via the btInUse() weak override in matter_app.cpp.
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_QUAD=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# CONFIG_SPIRAM is not set
 
-## Production cred hooks (populated in Phase 14d / 16 via esp-matter-mfg-tool).
-CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER=y
-CONFIG_SEC_CERT_DAC_PROVIDER=y
-CONFIG_SEC_CERT_COMMISSIONABLE_DATA_PROVIDER=y
+## Production cred hooks all deferred — when the factory-data partition isn't
+## flashed, CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER=y makes GetSetupDiscriminator
+## fail with CHIP_ERROR_INVALID_ARGUMENT and the BLE advert gets the wrong
+## discriminator, so controller apps can't find the device. Without this flag,
+## CHIP uses DeviceInstanceInfoProviderImpl + CommissionableDataProviderImpl which
+## fall back to clean test defaults (VID 0xFFF1 / PID 0x8000 / passcode 20202021 /
+## discriminator 3840). Phase 16 will re-enable this with real esp-matter-mfg-tool creds.
+# CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER is not set
+# CONFIG_SEC_CERT_DAC_PROVIDER is not set
+# CONFIG_SEC_CERT_COMMISSIONABLE_DATA_PROVIDER is not set

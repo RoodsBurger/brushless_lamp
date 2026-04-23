@@ -26,7 +26,9 @@ set(EXTRA_COMPONENT_DIRS
     "${ESP_MATTER_PATH}/examples/common"
     "${MATTER_SDK_PATH}/config/esp32/components"
     "${ESP_MATTER_PATH}/components"
-    "${ESP_MATTER_PATH}/device_hal/device")
+    "${ESP_MATTER_PATH}/device_hal/device"
+    "${ESP_MATTER_PATH}/device_hal/button_driver"
+    "${ESP_MATTER_PATH}/device_hal/led_driver")
 
 set(SDKCONFIG_DEFAULTS
     "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.defaults.common"
