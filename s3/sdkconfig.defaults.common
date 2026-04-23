@@ -3,7 +3,8 @@
 ##                          ${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults.esp32s3")
 ## so the common bits are inherited and stage-specific overrides stack on top.
 
-## Arduino-as-component: we own app_main and call initArduino() from main.cpp.
+## Arduino as component — we own app_main and call initArduino() from main.cpp.
+## FreeRTOS tick at 1 kHz is required by arduino-esp32 (asserted at CMake time).
 CONFIG_AUTOSTART_ARDUINO=n
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

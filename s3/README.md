@@ -322,6 +322,9 @@ fctry            0x420000 0x06000
 | BT controller `malloc` is pinned to `INTERNAL|DMA` caps. | Enabling PSRAM doesn't help (controller can't allocate from it) and can destabilise BLE init on the S3R8. | `CONFIG_SPIRAM is not set` in the M4 sdkconfig. | — |
 | Matter factory NVS only stores the Spake2+ verifier, not the raw passcode. | CHIP's `PrintOnboardingCodes` in the serial log regenerates a fallback QR — not the one that actually commissions the device. | Use the QR PNG or the `manualcode` column from `mfg_out/out/.../onb_codes.csv`. | expected Matter behavior. |
 | `app_reset` + device_hal transitively require `button` and `led_driver` components. | Build failure: "component `button` / `led_driver` could not be found". | `EXTRA_COMPONENT_DIRS` in top-level `CMakeLists.txt` adds both `device_hal/button_driver` and `device_hal/led_driver`, even though our code doesn't use them directly. | — |
+| ESP-IDF default CPU frequency is 160 MHz; software ECDSA (PASE_Pake2, CSR keypair) at that clock takes ~800 ms / ~530 ms and blows past the Matter commissioner's per-step timeout (`CHIP_ERROR_TIMEOUT` 32). | Commissioning aborts after CSRRequest with `Long dispatch time: 530 ms` in the CHIP log and no fabric added. | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` + `CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y` in `sdkconfig.defaults.esp32s3` — runs at the S3's rated 240 MHz and cuts crypto latency by ~1/3. | — |
+| Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
+| `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
 
 ---
 
@@ -430,6 +433,18 @@ needs 2.4 GHz WiFi reachable to the S3. Apple Home additionally needs a
 Matter controller hub on the same network (HomePod mini 2022+, Apple TV
 4K 2022+, or an iPad kept at home). Google Home needs a Nest Hub 2nd gen /
 Nest WiFi Pro / Chromecast-with-Google-TV 4K as hub.
+
+**Commissioning aborts with `CHIP_ERROR_TIMEOUT` (32) after CSRRequest** —
+the Matter commissioner gave up waiting for the CSR response. Verify the
+CPU is at 240 MHz (`cpu freq: 240000000 Hz` in the boot log) and that
+`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + DLE are active in sdkconfig —
+both are the gates on this step finishing inside the controller's budget.
+
+**Commissioning works with `idf.py monitor` attached but fails without it** —
+classic symptom of CPU running at 160 MHz (the IDF default). USB-CDC host
+polling would happen to keep tasks scheduled fast enough to squeak inside
+the commissioner's timeout; closing the monitor removes that luck. Bump
+to 240 MHz per the workarounds table, which makes the outcome consistent.
 
 **Motor audibility regresses after a factory-reset boot** — the direction
 sweep inside `initFOC` only runs when `foc_cal` is empty. Once run, the
