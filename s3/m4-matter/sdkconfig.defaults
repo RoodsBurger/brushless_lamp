@@ -1,6 +1,20 @@
 ## M4-matter, target-agnostic settings that layer on top of sdkconfig.defaults.common.
 ## Target-specific bits (flash size, USB console) live in sdkconfig.defaults.esp32s3.
 
+## Quiet logging by default. USB-CDC console blocks per-byte for up to 50 ms when
+## no host reader is attached (TX_FLUSH_TIMEOUT_US in usb_serial_jtag_vfs.c), and
+## Matter's INFO-level chatter during commissioning pushes the CHIP task into
+## that backpressure — which shows up as failed commissioning when no serial
+## monitor is open but clean when one is. Runtime level = WARN suppresses the
+## per-byte stall; CHIP_DETAIL_LOGGING off trims CHIP's own verbose internals.
+## LOG_MAXIMUM_LEVEL from common keeps DEBUG compiled in so esp_log_level_set()
+## can raise it at runtime for a debugging session.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# CONFIG_LOG_DEFAULT_LEVEL_INFO is not set
+CONFIG_CHIP_DETAIL_LOGGING=n
+CONFIG_CHIP_PROGRESS_LOGGING=y
+CONFIG_CHIP_ERROR_LOGGING=y
+
 ## Custom partition table for the 8 MB XIAO S3 — OTA slots at 2 MB each + fctry
 ## partition for per-device DAC (Phase 16/14d production flow).
 CONFIG_PARTITION_TABLE_CUSTOM=y
