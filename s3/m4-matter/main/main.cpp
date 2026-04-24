@@ -4,6 +4,7 @@
 // cycle, 9 s hold → esp_matter::factory_reset.
 
 #include <Arduino.h>
+#include <driver/gpio.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
@@ -14,8 +15,25 @@
 #include "leds.h"
 #include "matter_app.h"
 #include "config.h"
+#include "pins.h"
 
 extern "C" void app_main() {
+    // Park the DRV8313 asleep before anything else runs. nSLEEP has an external
+    // pullup, so without this the driver is AWAKE from POR through ROM +
+    // bootloader + our init, pulling quiescent current from a rail that may
+    // still be ramping. motor_foc_task drives HIGH when it's ready.
+    gpio_set_direction((gpio_num_t)PIN_NSP, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_NSP, 0);
+
+    // Snuff the LEDs before the bootloader's UART0 idle-HIGH on GPIO43 (= LED_CW)
+    // produces the ~1.5 s "boot flash" the user sees, and symmetrise GPIO6
+    // (= LED_WW) so a future pin swap doesn't bite. leds_init() takes these over
+    // with LEDC later; pre-attach the pin state is undefined.
+    gpio_set_direction((gpio_num_t)PIN_LED_WW, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_LED_WW, 0);
+    gpio_set_direction((gpio_num_t)PIN_LED_CW, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_LED_CW, 0);
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
@@ -23,7 +41,10 @@ extern "C" void app_main() {
     }
 
     initArduino();
-    delay(500);
+    // Power-rail stabilization window. Lets the buck converter output and the
+    // VBUS bulk cap fully charge before Matter's BLE advertiser (300–500 mA
+    // transient) and initFOC's sensor-align sweep (~1.2 A) hit the supply.
+    delay(1500);
 
     printf("\n=== BrushlessLamp M4-matter (S3) ===\n");
 
@@ -31,9 +52,6 @@ extern "C" void app_main() {
     // clean update.
     motor_set_settle_callback(matter_push_level_from_angle);
 
-    // Order matters: Matter's BLE init runs on a clean heap. The busy-wait motor
-    // task on core 1 (with watchdog-delete) is noisy, so we bring it up after
-    // Matter is commissioned-ready.
     leds_init();
     matter_app_init();
     leds_start_fader();
