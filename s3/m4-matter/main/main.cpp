@@ -25,15 +25,6 @@ extern "C" void app_main() {
     gpio_set_direction((gpio_num_t)PIN_NSP, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_NSP, 0);
 
-    // Snuff the LEDs before the bootloader's UART0 idle-HIGH on GPIO43 (= LED_CW)
-    // produces the ~1.5 s "boot flash" the user sees, and symmetrise GPIO6
-    // (= LED_WW) so a future pin swap doesn't bite. leds_init() takes these over
-    // with LEDC later; pre-attach the pin state is undefined.
-    gpio_set_direction((gpio_num_t)PIN_LED_WW, GPIO_MODE_OUTPUT);
-    gpio_set_level((gpio_num_t)PIN_LED_WW, 0);
-    gpio_set_direction((gpio_num_t)PIN_LED_CW, GPIO_MODE_OUTPUT);
-    gpio_set_level((gpio_num_t)PIN_LED_CW, 0);
-
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
