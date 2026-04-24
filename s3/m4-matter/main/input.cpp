@@ -58,23 +58,33 @@ static void IRAM_ATTR onKnobEdge() {
 }
 
 static void on_single_click() {
-    s_brightness_mode = !s_brightness_mode;
-    ESP_LOGI(TAG, "mode=%s", s_brightness_mode ? "brightness" : "motor");
+    // Google-Home-style on/off: off → motor target 0, on → last Matter level
+    // (matter_push_onoff's apply_state drives the motor from the current level).
+    bool new_on = !matter_get_on_off();
+    matter_push_onoff(new_on);
+    ESP_LOGI(TAG, "onoff → %s", new_on ? "on" : "off");
 }
 
 static void on_double_click() {
+    s_brightness_mode = !s_brightness_mode;
+    // 2 blinks so the mode toggle can't be mistaken for the idx-0 speed blink.
+    leds_pulse(2);
+    ESP_LOGI(TAG, "mode=%s", s_brightness_mode ? "brightness" : "motor");
+}
+
+static void on_triple_click() {
     constexpr uint8_t N = sizeof(MOTION_VELOCITY_PRESETS) / sizeof(MOTION_VELOCITY_PRESETS[0]);
     s_speed_idx = (uint8_t)((s_speed_idx + 1) % N);
     float new_v = MOTION_VELOCITY_PRESETS[s_speed_idx];
     motor_set_motion_velocity(new_v);
     leds_pulse((uint8_t)(s_speed_idx + 1));
     // Synchronous NVS commit (~10-30 ms) on the 10 ms input task; acceptable
-    // because double-click is a rare discrete event, not a rapid knob gesture.
+    // because the speed cycle is a rare discrete event, not a rapid gesture.
     input_save_speed_idx();
     ESP_LOGI(TAG, "speed=%.1f rad/s", new_v);
 }
 
-enum class BtnEvent : uint8_t { NONE, CLICK, DOUBLE_CLICK, HOLD_WARNING, FACTORY_RESET };
+enum class BtnEvent : uint8_t { NONE, CLICK, DOUBLE_CLICK, TRIPLE_CLICK, HOLD_WARNING, FACTORY_RESET };
 
 static BtnEvent poll_button() {
     static bool     stable        = true;
@@ -82,7 +92,7 @@ static BtnEvent poll_button() {
     static uint32_t last_change   = 0;
     static uint32_t press_start   = 0;
     static uint32_t last_click_ms = 0;
-    static bool     pending_click = false;
+    static uint8_t  click_count   = 0;
     static bool     warning_fired = false;
 
     bool reading = digitalRead(PIN_BTN);
@@ -103,22 +113,21 @@ static BtnEvent poll_button() {
         } else {
             uint32_t held = now - press_start;
             if (held < BTN_CLICK_MAX_MS) {
-                if (pending_click && (now - last_click_ms) < BTN_DOUBLE_CLICK_MS) {
-                    pending_click = false;
-                    last_click_ms = 0;
-                    ev = BtnEvent::DOUBLE_CLICK;
-                } else {
-                    pending_click = true;
-                    last_click_ms = now;
-                }
+                // Accumulate click count; each new click restarts the window
+                // so N rapid taps in a row fire one CLICK_N event at the end.
+                click_count++;
+                last_click_ms = now;
             }
         }
     }
 
-    if (pending_click && (now - last_click_ms) >= BTN_DOUBLE_CLICK_MS) {
-        pending_click = false;
+    // Window closed with N clicks pending → fire the matching event.
+    if (click_count > 0 && (now - last_click_ms) >= BTN_DOUBLE_CLICK_MS) {
+        if      (click_count == 1) ev = BtnEvent::CLICK;
+        else if (click_count == 2) ev = BtnEvent::DOUBLE_CLICK;
+        else                        ev = BtnEvent::TRIPLE_CLICK;   // 3 or more
+        click_count   = 0;
         last_click_ms = 0;
-        ev = BtnEvent::CLICK;
     }
 
     if (stable == LOW && press_start != 0) {
@@ -155,6 +164,7 @@ static void input_task(void *) {
         switch (poll_button()) {
         case BtnEvent::CLICK:          on_single_click(); break;
         case BtnEvent::DOUBLE_CLICK:   on_double_click(); break;
+        case BtnEvent::TRIPLE_CLICK:   on_triple_click(); break;
         case BtnEvent::HOLD_WARNING:   leds_pulse(5);
                                        ESP_LOGW(TAG, "5 s hold — release to cancel, hold to 9 s for factory reset");
                                        break;

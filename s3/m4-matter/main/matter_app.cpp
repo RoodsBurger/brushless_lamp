@@ -206,6 +206,28 @@ void matter_app_init() {
 extern "C" unsigned short matter_get_color_temp_mireds(void) { return s_color_temp_mireds; }
 extern "C" bool           matter_get_on_off(void)            { return s_on_off; }
 
+// Button-driven OnOff toggle. Mirrors what attribute_update_cb would do on a
+// Matter-side write: updates local state, runs apply_state (which drives the
+// motor target to 0 or to level/254*ANGLE_MAX), then pushes OnOff out to
+// subscribers. Level stays put so off→on restores last brightness.
+namespace { struct OnOffPush { uint16_t ep; bool on; }; }
+static void matter_push_onoff_work(intptr_t arg) {
+    OnOffPush *p = reinterpret_cast<OnOffPush *>(arg);
+    esp_matter_attr_val_t vo = esp_matter_bool(p->on);
+    esp_err_t r = attribute::update(p->ep, OnOff::Id, OnOff::Attributes::OnOff::Id, &vo);
+    if (r != ESP_OK) ESP_LOGE(TAG, "onoff push failed: %d", r);
+    delete p;
+}
+extern "C" void matter_push_onoff(bool on) {
+    if (s_endpoint_id == 0) return;
+    if (on == s_on_off)     return;
+    s_on_off = on;
+    apply_state();
+    auto *p = new OnOffPush{ s_endpoint_id, on };
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(matter_push_onoff_work,
+                                                  reinterpret_cast<intptr_t>(p));
+}
+
 // Outbound push — marshals attribute::update() onto the CHIP task so arbitrary
 // FreeRTOS threads can call us safely. `also_on` and `force_off` are mutually
 // exclusive: knob motion up from rest implies OnOff=true, knob motion down to 0

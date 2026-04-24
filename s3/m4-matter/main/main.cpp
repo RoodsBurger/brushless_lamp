@@ -50,7 +50,7 @@ extern "C" void app_main() {
     input_init();
     input_task_start();
 
-    printf("Ready. Knob = %.2f rad/detent | click=brightness | 2×=speed | 9s=factory reset\n",
+    printf("Ready. Knob = %.2f rad/detent | 1×=on/off | 2×=mode | 3×=speed | 9s=factory reset\n",
            KNOB_STEP_RAD);
 
     vTaskDelete(nullptr);

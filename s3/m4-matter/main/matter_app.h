@@ -23,6 +23,12 @@ bool           matter_get_on_off(void);
 // non-nullable variant is silently rejected with ESP_ERR_INVALID_ARG (258).
 void matter_push_level_from_angle(float angle_rad);
 
+// Local OnOff toggle — drives motor to 0 on off, to last-commanded level on on,
+// and pushes the new OnOff state to Matter subscribers. Level is preserved so
+// off→on restores the last brightness (Google-Home-style). No-op if the new
+// value matches the current OnOff.
+void matter_push_onoff(bool on);
+
 // Wipes foc_cal / leds / input NVS namespaces. esp_matter::factory_reset()
 // only touches CHIP's own namespaces, so call this right before it (on
 // button-hold factory reset) to guarantee the next boot runs a full motor

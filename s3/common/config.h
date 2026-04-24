@@ -36,16 +36,16 @@ constexpr float SENSOR_MIN_ELAPSED_TIME = 0.0005f;  // encoder delta-t gate (s);
 //     desired = min(MOTION_VELOCITY, sqrt(2 * MOTION_ACCEL * |pos_err|))
 // Accel / cruise / decel profile lands exactly at target with v=0.
 constexpr float    ANGLE_MAX          = 100.0f * 6.2831853f;  // 100 motor rotations
-constexpr float    MOTION_VELOCITY    = 8.0f;       // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
+constexpr float    MOTION_VELOCITY    = 15.0f;      // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
 constexpr float    MOTION_ACCEL       = 10.0f;      // rad/s² ramp + brake rate
 constexpr float    MOTION_EPS         = 0.5f;       // brake-on-reverse sign-change eps (rad/s)
 constexpr float    KNOB_STEP_RAD         = 6.2831853f;  // M3/M4 angle-mode: 1 motor rotation per detent
 constexpr float    KNOB_STEP_RAD_PER_SEC = 10.0f;       // M2 velocity-nudge: ±10 rad/s per detent
 constexpr float    KNOB_VEL_MAX_RAD_PER_SEC = 50.0f;    // M2 velocity-nudge clamp
 
-// Double-click cycles MOTION_VELOCITY through these presets. Count is also the
+// Triple-click cycles MOTION_VELOCITY through these presets. Count is also the
 // LED-pulse feedback count (idx + 1 blinks) so index 0 = 1 blink = slowest.
-constexpr float   MOTION_VELOCITY_PRESETS[]     = { 8.0f, 15.0f, 25.0f, 40.0f };
+constexpr float   MOTION_VELOCITY_PRESETS[]     = { 15.0f, 25.0f, 40.0f };
 constexpr uint8_t MOTION_VELOCITY_PRESET_DEFAULT = 0;
 
 // Idle-disable: after IDLE_DISABLE_MS of commanded_vel + shaft_vel + pos_err
@@ -95,14 +95,15 @@ constexpr uint16_t COLORTEMP_MAX     = 500;
 // FOC loop. Zero disables.
 constexpr uint32_t PRINT_INTERVAL_MS = 0;
 
-// Button semantics:
-//   short click  (<CLICK_MAX_MS, no partner within DOUBLE_CLICK_MS): toggle
-//     brightness mode — knob nudges LED max_duty instead of motor angle
-//   double click (two clicks within DOUBLE_CLICK_MS): cycle speed presets,
-//     LEDs pulse (idx+1 blinks)
-//   hold ≥ LONG_PRESS_WARNING_MS: 5 warning blinks
-//   hold ≥ FACTORY_RESET_MS: esp_matter::factory_reset() (M4) or nvs_flash_erase
-//     + restart (M3)
+// Button semantics (each short tap resets the DOUBLE_CLICK window, so N clicks
+// fire as one CLICK_N event when the window closes):
+//   1 click : toggle Matter OnOff — off snaps motor to 0, on restores to last
+//             commanded level (Google-Home-style on/off)
+//   2 clicks: toggle knob mode (motor angle ↔ LED brightness); 2 LED blinks
+//   3 clicks: cycle speed presets; LEDs pulse (idx+1 blinks)
+//   hold ≥ LONG_PRESS_WARNING_MS : 5 warning blinks
+//   hold ≥ FACTORY_RESET_MS      : esp_matter::factory_reset() (M4) or
+//                                  nvs_flash_erase + restart (M3)
 constexpr uint32_t BTN_DEBOUNCE_MS           = 30;
 constexpr uint32_t BTN_CLICK_MAX_MS          = 400;
 constexpr uint32_t BTN_DOUBLE_CLICK_MS       = 400;
