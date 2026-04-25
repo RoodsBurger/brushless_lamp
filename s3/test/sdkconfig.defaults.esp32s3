@@ -1,0 +1,26 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+## 240 MHz so behavior matches the M4 build (clock affects current draw).
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+
+## USB-Serial-JTAG console, no secondary — same as M4 so any USB-CDC quirks
+## reproduce identically here.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+## 8 MB flash on XIAO S3.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+## No PSRAM, no BT, no WiFi — strip the radios so this build draws as little
+## current as possible. If it still won't boot from external 5 V, the failure
+## is unambiguously a power-rail issue.
+# CONFIG_SPIRAM is not set
+CONFIG_BT_ENABLED=n
+
+## Quiet logs by default to match M4 (USB-CDC backpressure mitigation).
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# CONFIG_LOG_DEFAULT_LEVEL_INFO is not set
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

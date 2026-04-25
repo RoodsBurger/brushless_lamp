@@ -66,6 +66,8 @@ Matter). The rest of this doc targets M4.
 | 2   | AO3400A N-channel MOSFET (SOT-23)          | one per LED channel |
 | 1   | Mean Well LRS-75-24                        | 24 V 3.2 A mains supply |
 | 1   | Mini360 buck 24 V → 5 V                    | feeds XIAO `5V` |
+| 1   | MCP809T-300I/TT (or MAX809 / TPS3839 3.0 V) | **Required for external supplies.** SOT-23-3 voltage supervisor; VDD→3V3, GND→GND, RESET (open-drain)→XIAO RST pad. See §Workarounds for the EN-pin partial-reset failure mode. |
+| 1   | 100 nF X7R 0805 ceramic                    | bypass on supervisor VDD, < 5 mm leads |
 
 ### Wiring
 
@@ -325,6 +327,7 @@ fctry            0x420000 0x06000
 | ESP-IDF default CPU frequency is 160 MHz; software ECDSA (PASE_Pake2, CSR keypair) at that clock takes ~800 ms / ~530 ms and blows past the Matter commissioner's per-step timeout (`CHIP_ERROR_TIMEOUT` 32). | Commissioning aborts after CSRRequest with `Long dispatch time: 530 ms` in the CHIP log and no fabric added. | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` + `CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y` in `sdkconfig.defaults.esp32s3` — runs at the S3's rated 240 MHz and cuts crypto latency by ~1/3. | — |
 | Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
 | `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
+| XIAO S3's EN pin uses a weak pull-up + small cap. USB power rises in microseconds (clean step), so EN crosses logic-high cleanly and the chip resets properly. With a slow-ramp external supply (any non-USB 5 V or 3.3 V source), EN sits in an indeterminate region and the chip enters a partial-reset state — peripherals come up but Matter's BLE+WiFi PHY init silently locks the CPU. | Lamp boots, motor / knob / LEDs work for ~5 s, then the CPU hangs the instant `esp_matter::start()` runs. No brownout (`0x09`) or panic (`0x04`) reset reason — chip is genuinely wedged. | **Hardware fix only**: external 3.0 V voltage supervisor (MCP809T-300I/TT, MAX809, TPS3839L30) on 3V3 with open-drain RESET tied to the XIAO's RST pad. Required for any external-supply deployment. See BOM. | [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702). |
 
 ---
 
