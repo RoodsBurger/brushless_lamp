@@ -56,7 +56,7 @@ extern "C" void app_main() {
 
     initArduino();
 
-    printf("\n=== BrushlessLamp M4-matter (S3) ===\n");
+    printf("\n=== BrushlessLamp M4-matter (Teyleten S3 SuperMini) ===\n");
 
     // Wire the knob → Matter push BEFORE motor starts so the first settle fires a
     // clean update.

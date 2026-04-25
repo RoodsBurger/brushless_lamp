@@ -1,0 +1,14 @@
+## chip + esp_matter are pulled in via CMake (EXTRA_COMPONENT_DIRS in the
+## top-level CMakeLists), not the component manager — which is why only
+## arduino-esp32 + the secure-cert pin appear here.
+dependencies:
+  idf:
+    version: ">=5.4.0"
+  espressif/arduino-esp32:
+    version: "^3.2.0"
+  ## EXACT pin (not a range). 2.9.x removed esp_secure_cert_get_priv_key()
+  ## which CHIP's ESP32SecureCertDACProvider still calls
+  ## (connectedhomeip#31382, esp-matter#798). Any component-manager upgrade
+  ## past 2.5.x needs re-testing.
+  espressif/esp_secure_cert_mgr:
+    version: "2.5.0"

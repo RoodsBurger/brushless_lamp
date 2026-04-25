@@ -77,6 +77,11 @@ static void motor_foc_task(void *) {
 
     pinMode(PIN_NSP, OUTPUT);
     digitalWrite(PIN_NSP, HIGH);
+    if (PIN_DRV_EN >= 0) {
+        // Teyleten board wires DRV8313 EN to a GPIO; XIAO has it jumpered to 3V3.
+        pinMode((uint8_t)PIN_DRV_EN, OUTPUT);
+        digitalWrite((uint8_t)PIN_DRV_EN, HIGH);
+    }
     delay(2);
 
     s_driver.voltage_power_supply = SUPPLY_VOLTAGE;

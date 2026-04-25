@@ -128,6 +128,28 @@ software "disable" means anyway).
 | 5V      | —    | Mini360 OUT+         | XIAO onboard LDO to 3V3 |
 | GND     | —    | common               | shared with Mean Well V−, Mini360 OUT−, LED MOSFET sources |
 
+### Pin map: XIAO vs Teyleten SuperMini
+
+Same chip (ESP32-S3) — only the physical pin location each peripheral wires to
+differs. `s3/common/pins.h` selects the right GPIO numbers based on the
+`BRUSHLESSLAMP_BOARD_TEYLETEN` build define.
+
+| Signal       | XIAO GPIO | Teyleten GPIO | Notes |
+|--------------|----------:|--------------:|-------|
+| `PIN_ENC_A`  | 1  | 1  | unchanged |
+| `PIN_ENC_B`  | 2  | 2  | unchanged |
+| `PIN_ROT_A`  | 3  | 3  | JTAG strap, internal pull-up at boot is fine |
+| `PIN_ROT_B`  | 4  | 4  | unchanged |
+| `PIN_BTN`    | 5  | 5  | unchanged |
+| `PIN_LED_WW` | 6  | 6  | unchanged |
+| `PIN_LED_CW` | 43 | 7  | off the UART0 TX strap on Teyleten — no boot flicker |
+| `PIN_DRV_EN` | — (jumpered to 3V3) | 8 | software-controlled on Teyleten |
+| `PIN_NSP`    | 44 | 10 | off the UART0 RX strap on Teyleten |
+| `PIN_PWM_C`  | 7  | 11 | DRV8313 IN3 |
+| `PIN_PWM_B`  | 8  | 12 | DRV8313 IN2 |
+| `PIN_PWM_A`  | 9  | 13 | DRV8313 IN1 |
+| (spare)      | —  | 9  | unused on Teyleten |
+
 ---
 
 ## 3. Control surface
@@ -197,6 +219,22 @@ idf.py -p /dev/cu.usbmodem101 flash monitor
 M1 / M2 / M3 build the same way — swap the stage directory. Those stages
 don't need `esp-matter`, so `source ~/esp/esp-matter/export.sh` isn't
 required (but doesn't hurt).
+
+### Building for the Teyleten ESP32-S3 SuperMini
+
+`s3/supermini_m4/` is a sibling of `m4-matter/` for the Teyleten board.
+Same firmware behavior — only the GPIO numbers wired to peripherals differ
+(see § 2 Hardware "Pin map: XIAO vs Teyleten"). The supermini build sets
+`-DBRUSHLESSLAMP_BOARD_TEYLETEN=1` at project scope, which selects the
+alternate branch in `s3/common/pins.h`. Drops OTA + uses 4 MB flash layout
+to fit Teyleten's smaller flash (`partitions.csv`, `sdkconfig.defaults`).
+
+```sh
+cd ~/esp/brushlesslamp-s3/supermini_m4
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/cu.usbmodem101 flash monitor
+```
 
 ### Stage acceptance
 

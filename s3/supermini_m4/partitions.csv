@@ -1,0 +1,13 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# Teyleten SuperMini ESP32-S3 — 4 MB flash, no OTA. Single `factory` app slot
+# at ~3.4 MB (1.57 MB current binary + headroom). fctry holds the per-device DAC
+# from esp-matter-mfg-tool. If your specific unit ships with 8 MB flash, switch
+# to the m4-matter partition layout (two 2 MB OTA slots + fctry at 0x420000)
+# and re-enable CONFIG_ENABLE_OTA_REQUESTOR.
+esp_secure_cert,  0x3F, ,0xd000,    0x2000, encrypted
+nvs,      data, nvs,     0x10000,   0x6000,
+nvs_keys, data, nvs_keys,,          0x1000, encrypted
+otadata,  data, ota,     ,          0x2000
+phy_init, data, phy,     ,          0x1000
+factory,  app,  factory, 0x20000,   0x360000,
+fctry,    data, nvs,     0x380000,  0x6000
