@@ -7,6 +7,7 @@
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_private/rtc_clk.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
@@ -56,6 +57,15 @@ extern "C" void app_main() {
     // bootloader, pulling quiescent current. motor_foc_task wakes it later.
     gpio_set_direction((gpio_num_t)PIN_NSP, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_NSP, 0);
+
+    // Pin BBPLL alive against the USB-Serial-JTAG SOF auto-removal. With
+    // CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y the IDF connection monitor adds
+    // BBPLL as a consumer at boot, then drops it ~3 ms later if no SOF
+    // packets are seen. On external power (no USB host) that drops the ref
+    // count to 0, BBPLL gets disabled at the next CPU clock switch, and
+    // Wi-Fi/BLE radio init crashes silently around uptime 9.65 s. Adding our
+    // own consumer keeps the count ≥ 1 forever, regardless of host presence.
+    rtc_clk_bbpll_add_consumer();
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
