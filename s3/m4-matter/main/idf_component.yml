@@ -3,12 +3,12 @@
 ## arduino-esp32 + the secure-cert pin appear here.
 dependencies:
   idf:
-    version: ">=5.4.0"
+    version: ">=5.5.0"
   espressif/arduino-esp32:
-    version: "^3.2.0"
+    version: "^3.3.0"
   ## EXACT pin (not a range). 2.9.x removed esp_secure_cert_get_priv_key()
   ## which CHIP's ESP32SecureCertDACProvider still calls
-  ## (connectedhomeip#31382, esp-matter#798). Any component-manager upgrade
-  ## past 2.5.x needs re-testing.
+  ## (connectedhomeip#31382, esp-matter#798). Re-verified 2026-04-27 against
+  ## esp_secure_cert_mgr 2.9.2 — still applicable, the API is still missing.
   espressif/esp_secure_cert_mgr:
     version: "2.5.0"

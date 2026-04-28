@@ -110,8 +110,9 @@ static void motor_foc_task(void *) {
 
     printf("[motor] motor.init()=%d\n", s_motor.init());
 
-    // Reuse the direction detected on a prior boot if available.
+    // Cache disabled — initFOC runs the full rotation sweep every boot.
     int8_t  saved_dir = 0;
+#if 0
     {
         nvs_handle_t h;
         if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
@@ -122,14 +123,17 @@ static void motor_foc_task(void *) {
     if (saved_dir == (int8_t)Direction::CW || saved_dir == (int8_t)Direction::CCW) {
         s_motor.sensor_direction = (Direction)saved_dir;
     }
+#endif
 
     int foc_ok = s_motor.initFOC();
     printf("[motor] initFOC()=%d zero_elec=%.4f dir=%d\n",
            foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
     if (!foc_ok) {
         printf("[motor] FOC init FAILED\n");
-    } else if (saved_dir == 0 &&
-               (s_motor.sensor_direction == Direction::CW || s_motor.sensor_direction == Direction::CCW)) {
+    }
+#if 0
+    else if (saved_dir == 0 &&
+             (s_motor.sensor_direction == Direction::CW || s_motor.sensor_direction == Direction::CCW)) {
         // Cache the direction so future boots skip the rotation sweep.
         nvs_handle_t h;
         if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
@@ -139,6 +143,7 @@ static void motor_foc_task(void *) {
             nvs_close(h);
         }
     }
+#endif
 
     s_motor.disable();   // boot idle; first target change wakes the task
 

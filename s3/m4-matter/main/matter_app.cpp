@@ -27,12 +27,39 @@
 #include <setup_payload/ManualSetupPayloadGenerator.h>
 #include <setup_payload/SetupPayload.h>
 
+#include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <nvs.h>
 
 #include "matter_app.h"
 #include "motor.h"
 #include "leds.h"
 #include "config.h"
+
+// Single-key writer for the boot_dbg NVS namespace; used by beacon() and event_cb.
+static void boot_dbg_set(const char *key, uint32_t val) {
+    nvs_handle_t h;
+    if (nvs_open("boot_dbg", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u32(h, key, val);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// Beacon trace through matter_app_init — pulses GPIO 21 (XIAO user LED, active-LOW)
+// N times with 40 ms on / 60 ms off, then persists last_ckpt=N to NVS boot_dbg
+// so the next boot can read how far the previous boot got. Trailing 150 ms gap
+// keeps consecutive beacons visually distinguishable.
+static void beacon(uint8_t n) {
+    for (uint8_t i = 0; i < n; i++) {
+        gpio_set_level((gpio_num_t)21, 0);
+        vTaskDelay(pdMS_TO_TICKS(40));
+        gpio_set_level((gpio_num_t)21, 1);
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+    boot_dbg_set("last_ckpt", (uint32_t)n);
+    vTaskDelay(pdMS_TO_TICKS(150));
+}
 
 // esp_matter::factory_reset() only clears CHIP's namespaces (chip-config,
 // chip-counters, KVS). Our motor / LED / input namespaces stay put across
@@ -118,6 +145,14 @@ static esp_err_t identification_cb(identification::callback_type_t type, uint16_
 }
 
 static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
+    // DIAG: capture every event the CHIP main task fires so the next boot's
+    // boot_dbg readout shows which event was last seen before a wedge.
+    static uint32_t s_evt_n = 0;
+    s_evt_n++;
+    boot_dbg_set("last_evt",    (uint32_t)event->Type);
+    boot_dbg_set("last_evt_n",  s_evt_n);
+    boot_dbg_set("last_evt_ms", (uint32_t)esp_log_timestamp());
+
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
         ESP_LOGI(TAG, "commissioning complete"); break;
@@ -142,9 +177,11 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
 }
 
 void matter_app_init() {
+    beacon(1);
     node::config_t node_config;
     node_t *node = node::create(&node_config, attribute_update_cb, identification_cb);
     if (!node) { ESP_LOGE(TAG, "node::create failed"); return; }
+    beacon(2);
 
     color_temperature_light::config_t lc;
     lc.on_off.on_off                         = false;
@@ -163,6 +200,7 @@ void matter_app_init() {
     if (!ep) { ESP_LOGE(TAG, "endpoint create failed"); return; }
     s_endpoint_id = endpoint::get_id(ep);
     ESP_LOGI(TAG, "ColorTemperatureLight endpoint=%u", s_endpoint_id);
+    beacon(3);
 
     // Deferred persistence on rapidly-changing attrs — slider drags don't thrash NVS.
     if (auto *a = attribute::get(s_endpoint_id, LevelControl::Id,
@@ -170,8 +208,10 @@ void matter_app_init() {
     if (auto *a = attribute::get(s_endpoint_id, ColorControl::Id,
                                  ColorControl::Attributes::ColorTemperatureMireds::Id)) attribute::set_deferred_persistence(a);
 
+    beacon(4);
     esp_err_t err = esp_matter::start(event_cb);
     if (err != ESP_OK) { ESP_LOGE(TAG, "esp_matter::start err=%d", err); return; }
+    beacon(5);
 
     // Log the live VID/PID/discriminator + onboarding payload. When fctry holds
     // real mfg-tool data the VID/PID/discriminator are per-device; the passcode
@@ -191,6 +231,7 @@ void matter_app_init() {
         ESP_LOGI(TAG, "already commissioned (%u fabrics)",
                  (unsigned)chip::Server::GetInstance().GetFabricTable().FabricCount());
     }
+    beacon(6);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
@@ -199,6 +240,7 @@ void matter_app_init() {
     esp_matter::console::attribute_register_commands();
     esp_matter::console::init();
 #endif
+    beacon(7);
 }
 
 extern "C" unsigned short matter_get_color_temp_mireds(void) { return s_color_temp_mireds; }
