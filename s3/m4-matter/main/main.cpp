@@ -63,11 +63,19 @@ extern "C" void app_main() {
     motor_set_settle_callback(matter_push_level_from_angle);
 
     leds_init();
-    matter_app_init();
     leds_start_fader();
     motor_init_and_start();
     input_init();
     input_task_start();
+
+    // Defer Matter bring-up by 5 s — motor / knob / LEDs are usable immediately,
+    // and on a marginal external supply that can't survive Matter's BLE+WiFi
+    // PHY init spike, the lamp still works locally even though Matter wedges.
+    xTaskCreatePinnedToCore([](void *) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        matter_app_init();
+        vTaskDelete(nullptr);
+    }, "matter_late", 6144, nullptr, 3, nullptr, CORE_OTHERS);
 
     printf("Ready. Knob = %.2f rad/detent | 1×=on/off | 2×=mode | 3×=speed | 9s=factory reset\n",
            KNOB_STEP_RAD);
