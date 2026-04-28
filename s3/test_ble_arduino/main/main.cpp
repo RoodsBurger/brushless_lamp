@@ -1,12 +1,11 @@
-// Bare-bones BLE-only repro for the external-power wedge.
+// test_ble + arduino-as-component init layer.
 //
-// Boots, init NimBLE, start BLE advertising. A heartbeat task on core 0 toggles
-// GPIO 21 every 200 ms — same liveness probe as the m4-matter build. NVS-
-// persisted boot_dbg captures reset reason, prev_ckpt (at each beacon checkpoint
-// through bring-up), and prev_evt (last NimBLE GAP event seen).
-//
-// If this build wedges on external power around the same relative point as
-// m4-matter, the failure is below the application stack — in IDF/NimBLE/silicon.
+// Mirrors s3/test_ble/main/main.c but pulls in arduino-esp32 and calls
+// initArduino() before any radio init. If THIS build wedges on external
+// power (where test_ble alone does not), the bug is in arduino-as-component;
+// if it doesn't, the bug is higher up in esp-matter / CHIP.
+
+#include <Arduino.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -30,12 +29,9 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 
-static const char *TAG = "test_ble";
+static const char *TAG = "test_ble_arduino";
 
-// On-board user LED (active-LOW) — same as m4-matter's heartbeat + beacon line.
 #define LED_GPIO 21
-
-// ----- boot_dbg NVS namespace (mirrors s3/m4-matter/main/main.cpp) ------------
 
 static void boot_dbg_set(const char *key, uint32_t val) {
     nvs_handle_t h;
@@ -66,19 +62,16 @@ static void log_prev_reset_reason(void) {
            (unsigned)prev_ckpt, (unsigned)prev_evt);
 }
 
-// Beacon: pulse GPIO 21 N times then persist last_ckpt=N to NVS.
 static void beacon(uint8_t n) {
     for (uint8_t i = 0; i < n; i++) {
-        gpio_set_level(LED_GPIO, 0);
+        gpio_set_level((gpio_num_t)LED_GPIO, 0);
         vTaskDelay(pdMS_TO_TICKS(40));
-        gpio_set_level(LED_GPIO, 1);
+        gpio_set_level((gpio_num_t)LED_GPIO, 1);
         vTaskDelay(pdMS_TO_TICKS(60));
     }
     boot_dbg_set("last_ckpt", (uint32_t)n);
     vTaskDelay(pdMS_TO_TICKS(150));
 }
-
-// ----- BLE advertising ------------------------------------------------------
 
 static uint8_t own_addr_type;
 
@@ -87,34 +80,24 @@ static int gap_event(struct ble_gap_event *event, void *arg);
 static void start_advertising(void) {
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
-
     memset(&fields, 0, sizeof fields);
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.tx_pwr_lvl_is_present = 1;
     fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-
     int rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "set_fields rc=%d", rc);
-        return;
-    }
-
+    if (rc != 0) { ESP_LOGE(TAG, "set_fields rc=%d", rc); return; }
     memset(&adv_params, 0, sizeof adv_params);
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-
     rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER,
                            &adv_params, gap_event, NULL);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "adv_start rc=%d", rc);
-    } else {
-        printf("[test_ble] advertising started\n");
-    }
+    if (rc != 0) ESP_LOGE(TAG, "adv_start rc=%d", rc);
+    else printf("[test_ble_arduino] advertising started\n");
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg) {
     boot_dbg_set("last_evt", (uint32_t)event->type);
-    printf("[test_ble] gap event type=%d\n", event->type);
+    printf("[test_ble_arduino] gap event type=%d\n", event->type);
     if (event->type == BLE_GAP_EVENT_ADV_COMPLETE ||
         event->type == BLE_GAP_EVENT_DISCONNECT) {
         start_advertising();
@@ -138,28 +121,23 @@ static void on_reset(int reason) {
 }
 
 static void host_task(void *param) {
-    nimble_port_run();   // returns only on nimble_port_stop()
+    nimble_port_run();
     nimble_port_freertos_deinit();
 }
 
-// ----- heartbeat ------------------------------------------------------------
-
 static void heartbeat_task(void *arg) {
     while (1) {
-        gpio_set_level(LED_GPIO, 0);
+        gpio_set_level((gpio_num_t)LED_GPIO, 0);
         vTaskDelay(pdMS_TO_TICKS(20));
-        gpio_set_level(LED_GPIO, 1);
+        gpio_set_level((gpio_num_t)LED_GPIO, 1);
         vTaskDelay(pdMS_TO_TICKS(180));
     }
 }
 
-// ----- main -----------------------------------------------------------------
+extern "C" void app_main(void) {
+    gpio_set_direction((gpio_num_t)LED_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)LED_GPIO, 1);
 
-void app_main(void) {
-    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(LED_GPIO, 1);
-
-    // Match m4-matter: 2 s settle so USB-CDC re-enumerates before boot_dbg.
     vTaskDelay(pdMS_TO_TICKS(2000));
 
     esp_err_t err = nvs_flash_init();
@@ -169,14 +147,16 @@ void app_main(void) {
     }
 
     log_prev_reset_reason();
-    printf("\n=== BrushlessLamp test_ble ===\n");
+    printf("\n=== BrushlessLamp test_ble_arduino ===\n");
+
+    // Arduino-as-component init — sets up Serial (HWCDC over USB-Serial-JTAG),
+    // releases unused BT controller memory if !btInUse(), runs init() and
+    // initVariant() weak hooks.
+    initArduino();
+    printf("[test_ble_arduino] initArduino() done\n");
 
     xTaskCreatePinnedToCore(heartbeat_task, "hb", 2048, NULL, 1, NULL, 0);
 
-    // Bring up WiFi station ALONGSIDE BLE — mirrors what m4-matter does, so
-    // any Wi-Fi+BLE coex stress reproduces here. We don't actually connect to
-    // an AP (no credentials configured); just init + start, which puts the
-    // PHY in WiFi-active mode.
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
@@ -184,14 +164,11 @@ void app_main(void) {
     esp_wifi_init(&wifi_cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
-    printf("[test_ble] wifi started\n");
+    printf("[test_ble_arduino] wifi started\n");
 
     beacon(1);
     err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init err=%d", err);
-        return;
-    }
+    if (err != ESP_OK) { ESP_LOGE(TAG, "nimble_port_init err=%d", err); return; }
     beacon(2);
 
     ble_hs_cfg.reset_cb = on_reset;
@@ -199,11 +176,13 @@ void app_main(void) {
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     beacon(3);
 
-    int rc = ble_svc_gap_device_name_set("brushless-test-ble");
+    int rc = ble_svc_gap_device_name_set("brushless-test-ble-arduino");
     if (rc != 0) ESP_LOGE(TAG, "name_set rc=%d", rc);
     beacon(4);
 
     nimble_port_freertos_init(host_task);
-    // After this point, host_task is running; on_sync() will fire when the
-    // controller is ready, doing beacons 5/6/7.
 }
+
+// arduino-esp32 calls esp_bt_controller_mem_release() unless btInUse() returns
+// true. Our test uses NimBLE so we keep the controller memory alive.
+extern "C" __attribute__((used)) bool btInUse(void) { return true; }
