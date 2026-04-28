@@ -1,10 +1,47 @@
 # Brushless Lamp
 
-> **Current build targets the Seeed XIAO ESP32-S3 — see [`s3/README.md`](s3/README.md)** for hardware, wiring, toolchain, build / flash, per-device Matter provisioning, workarounds, code architecture and troubleshooting. The sections below describe the earlier C6 build preserved at `esp-idf/` as a rollback target.
+Kinetic smart lamp. A BLDC gimbal motor raises / lowers a lit core to control
+brightness; CCT LEDs ride with the core. A single rotary-encoder knob with push-
+button drives everything locally; Matter over WiFi exposes the lamp to Apple
+Home / Google Home / SmartThings. Production hardware is the **Seeed XIAO
+ESP32-S3** running ESP-IDF + esp-matter; the chip handles the SimpleFOC v2.4.0
+FOC loop itself on a dedicated core while WiFi, BLE, and CHIP share the other.
 
-Kinetic smart lamp — BLDC variant of [CylinderLamp](../CylinderLamp). Same concept (lit core raised/lowered by a motor to control brightness), but the stepper + TMC2209 is replaced by a gimbal BLDC motor driven through a SimpleFOC Mini, with a Seeed XIAO ESP32-C6 running the FOC commutation itself.
+## Production build → [`s3/README.md`](s3/README.md)
 
-## Current milestones — M1 + M2 + M3a + M3b + M4
+That doc is the source of truth for everything current: BOM, wiring, toolchain,
+build + flash, per-device Matter provisioning, code architecture, troubleshooting,
+and the open external-power limitation we're still working on (see § 7.1).
+Start there.
+
+## Repo layout
+
+```
+s3/                  Current build (XIAO ESP32-S3 + esp-matter)
+  ├── m4-matter/     Production stage — full Matter ColorTemperatureLight
+  ├── m1-motor/      Stage 1 — motor bring-up
+  ├── m2-knob/       Stage 2 — + knob
+  ├── m3-leds/       Stage 3 — + LEDs
+  ├── supermini_m4/  Experimental alternate (Teyleten ESP32-S3 SuperMini)
+  ├── test/          Pure-IDF blink for hardware sanity checks
+  ├── common/        Shared motor / pins / config
+  └── components/    Vendored SimpleFOC v2.4.0
+esp-idf/             Historical (XIAO ESP32-C6 build, frozen for rollback)
+```
+
+The C6 build below is kept verbatim only as a rollback reference.
+
+---
+
+## Historical (XIAO ESP32-C6, frozen for rollback)
+
+The original BrushlessLamp build targeted the XIAO ESP32-C6 with arduino-esp32's
+Matter library on top. It works, but Matter on C6 had several upstream bugs
+(WiFi-reconnect crash, shared-default QR codes, etc.) that drove the migration
+to the S3 + esp-matter stack documented in `s3/README.md`. The sections below
+describe that older build and remain accurate for `esp-idf/`.
+
+### Milestones — M1 + M2 + M3a + M3b + M4
 
 Closed-loop **angular-position control** on the motor via an MT6701 ABZ encoder. A rotary encoder knob with push-button drives the user interface:
 - **Position mode (default)**: knob turns the motor — the lit core rises/falls mechanically. Commanded position at 0 electrically turns the LEDs **off**.
@@ -195,7 +232,7 @@ Periodic status line (1 Hz) reports `cmd` (user-commanded position), `tgt` (trap
 7. Hold the button for 5 s — LEDs fade-pulse 5× (~2.4 s). Release before 9 s — no reset. Hold past 9 s — chip reboots and `Preferences` clear back to defaults (`commanded=0`, `spd=1`, `bri=50`, `cct=50`).
 8. Bench commands: `G10` seeks to 10 rad (LEDs turn on). `B20` dims to ~20 %. `W80` shifts CCT cool. `T3` slows subsequent seeks to 3 rad/s. `A5` softens the accel ramp. `X` clears a latched DRV8313 fault after OCP. `maxLp` should stay under ~500 µs throughout.
 
-## Roadmap
+### Roadmap (C6 era)
 
 - **M1 ✓** Motor spins under serial control (MCPWM, 3-phase voltage torque).
 - **M2 ✓** MT6701 encoder, closed-loop velocity, accel-limited velocity ramp, DRV8313 fault/stall recovery.
@@ -204,7 +241,7 @@ Periodic status line (1 Hz) reports `cmd` (user-commanded position), `tgt` (trap
 - **M4 ✓** Matter integration over WiFi. ColorTemperatureLight endpoint — Matter brightness slider drives motor position, Matter color temperature drives LED CCT mix. LED brightness stays knob-only. FOC commutation moved to a 2 kHz hw-timer ISR so the FreeRTOS scheduler is free to run Matter/WiFi/BLE tasks without starving the motor.
 - **M5 (deferred):** per-device unique QR codes (needs library patch or ESP-IDF migration), Matter-over-Thread transport, OTA updates over Matter.
 
-## Known issues / references
+### Known issues / references (C6 era)
 
 - **Periodic motor "click" every ~2 s on single-core ESP32 variants (S2/C3/C6).** arduino-esp32 runs `loop()` inside a FreeRTOS task that gets preempted by an unidentified background task for ~4 ms. At motor speeds where the electrical period approaches the stall duration (e.g. 50 rad/s × 11 pp ≈ 11 ms electrical), SVPWM is held frozen at the wrong rotor angle for ~37 % of an electrical cycle, producing an audible torque step on resume. Worked around by never returning from `loop()`. The proper fix is a hardware timer ISR — see Roadmap M4.
   - [simplefoc/Arduino-FOC#292 — "Motor skips every 2 sec on ESP32, even in open loop"](https://github.com/simplefoc/Arduino-FOC/issues/292)

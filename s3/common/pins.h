@@ -46,10 +46,9 @@ constexpr uint8_t PIN_PWM_A   = 13;    // DRV8313 IN1
 
 #else  // default: Seeed XIAO ESP32-S3
 
-// D-label → chip GPIO map. Breakout is wired by D-label, so only the GPIO
-// constants shift versus the C6 build; the mechanical harness stays the same.
-//   D2 (GPIO 3) is a JTAG-select strap — knob ROT_A sits here, internal pull-up
-//     at boot keeps JTAG in default mode. Safe.
+// D-label → chip GPIO map for the XIAO breakout.
+//   D2 (GPIO 3) is a JTAG-select strap — knob ROT_A sits here; internal pull-up
+//     at boot keeps JTAG in its default mode. Safe.
 //   D6 (GPIO 43) is UART0 TX — the ROM bootloader prints for ~30 ms at boot,
 //     causing a brief flicker on LED_CW. Cosmetic.
 //   D7 (GPIO 44) is UART0 RX (input during ROM boot) — DRV8313 nSLEEP has an

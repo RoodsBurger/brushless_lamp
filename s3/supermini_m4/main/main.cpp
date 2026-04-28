@@ -68,9 +68,10 @@ extern "C" void app_main() {
     input_init();
     input_task_start();
 
-    // Defer Matter bring-up by 5 s — motor / knob / LEDs are usable immediately,
-    // and on a marginal external supply that can't survive Matter's BLE+WiFi
-    // PHY init spike, the lamp still works locally even though Matter wedges.
+    // Defer Matter bring-up by 5 s onto a low-priority core-0 task so motor,
+    // knob, and LEDs are interactive immediately. The CPU lockup on external
+    // 5 V (see s3/README.md § 7.1) lands here when it triggers, so local
+    // control survives even when Matter init wedges the radios.
     xTaskCreatePinnedToCore([](void *) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         matter_app_init();

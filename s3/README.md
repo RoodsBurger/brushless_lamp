@@ -66,10 +66,15 @@ Matter). The rest of this doc targets M4.
 | 2   | AO3400A N-channel MOSFET (SOT-23)          | one per LED channel |
 | 1   | Mean Well LRS-75-24                        | 24 V 3.2 A mains supply |
 | 1   | Mini360 buck 24 V → 5 V                    | feeds XIAO `5V` |
-| 1   | MCP809T-300I/TT (or MAX809 / TPS3839 3.0 V) | **Required for external supplies.** SOT-23-3 voltage supervisor; VDD→3V3, GND→GND, RESET (open-drain)→XIAO RST pad. See §Workarounds for the EN-pin partial-reset failure mode. |
-| 1   | 100 nF X7R 0805 ceramic                    | bypass on supervisor VDD, < 5 mm leads |
+| 1   | SS14 Schottky diode (or equivalent, ≥ 1 A) | series between Mini360 OUT+ and XIAO `5V` — blocks USB-host back-feed during dev/flash |
+| 1   | 470 µF–1000 µF low-ESR electrolytic, ≥ 6.3 V | bulk decoupling on XIAO `5V`/GND, leads as short as possible (< 5 mm to the pads) |
 
 ### Wiring
+
+> **Production target shown.** The lamp does not yet boot reliably on this
+> external-supply path — see § 7.1 "Known limitation: external 5 V boot fails."
+> Until the cap + diode configuration is dialled in, develop with USB-C power
+> on the XIAO connector; everything else stays the same.
 
 ```
               ┌──────────────────┐
@@ -78,6 +83,12 @@ Matter). The rest of this doc targets M4.
               └───────────────────┘               └─ Mini360 IN+
                                                         │
                                     Mini360 OUT 5 V ────┘
+                                         │
+                                       SS14 ─►  (anode→Mini, cathode→XIAO 5V)
+                                         │
+                                         ├──[470 µF]── GND   (cap directly across
+                                         │                    XIAO 5V/GND pads,
+                                         │                    < 5 mm leads)
                                          │
                                          └── XIAO S3 5V  (onboard LDO → 3V3)
                                                    │
@@ -198,9 +209,10 @@ manifest rationale.
 
 ## 5. Build + flash
 
-The project path (`Personal Projects/BrushlessLamp`) contains a space which
-libsodium's unquoted `-include` chokes on. Every build runs in a no-space
-shadow directory under `~/esp/brushlesslamp-s3/`.
+`m4-matter/` is **the production build**. The project path (`Personal
+Projects/BrushlessLamp`) contains a space which libsodium's unquoted `-include`
+chokes on, so every build runs in a no-space shadow directory under
+`~/esp/brushlesslamp-s3/`.
 
 ```sh
 # One-time rsync + every edit after
@@ -216,11 +228,11 @@ idf.py build
 idf.py -p /dev/cu.usbmodem101 flash monitor
 ```
 
-M1 / M2 / M3 build the same way — swap the stage directory. Those stages
-don't need `esp-matter`, so `source ~/esp/esp-matter/export.sh` isn't
-required (but doesn't hurt).
+M1 / M2 / M3 are the staged debug scaffolds — same recipe, swap the stage
+directory. They don't need `esp-matter` (no Matter, no BLE), so sourcing
+`~/esp/esp-matter/export.sh` is optional.
 
-### Building for the Teyleten ESP32-S3 SuperMini
+### Experimental: Teyleten ESP32-S3 SuperMini build
 
 `s3/supermini_m4/` is a sibling of `m4-matter/` for the Teyleten board.
 Same firmware behavior — only the GPIO numbers wired to peripherals differ
@@ -365,7 +377,84 @@ fctry            0x420000 0x06000
 | ESP-IDF default CPU frequency is 160 MHz; software ECDSA (PASE_Pake2, CSR keypair) at that clock takes ~800 ms / ~530 ms and blows past the Matter commissioner's per-step timeout (`CHIP_ERROR_TIMEOUT` 32). | Commissioning aborts after CSRRequest with `Long dispatch time: 530 ms` in the CHIP log and no fabric added. | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` + `CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y` in `sdkconfig.defaults.esp32s3` — runs at the S3's rated 240 MHz and cuts crypto latency by ~1/3. | — |
 | Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
 | `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
-| XIAO S3's EN pin uses a weak pull-up + small cap. USB power rises in microseconds (clean step), so EN crosses logic-high cleanly and the chip resets properly. With a slow-ramp external supply (any non-USB 5 V or 3.3 V source), EN sits in an indeterminate region and the chip enters a partial-reset state — peripherals come up but Matter's BLE+WiFi PHY init silently locks the CPU. | Lamp boots, motor / knob / LEDs work for ~5 s, then the CPU hangs the instant `esp_matter::start()` runs. No brownout (`0x09`) or panic (`0x04`) reset reason — chip is genuinely wedged. | **Hardware fix only**: external 3.0 V voltage supervisor (MCP809T-300I/TT, MAX809, TPS3839L30) on 3V3 with open-drain RESET tied to the XIAO's RST pad. Required for any external-supply deployment. See BOM. | [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702). |
+| XIAO S3's EN pin uses a weak pull-up + small cap. USB power rises in microseconds (clean step) so EN crosses logic-high cleanly. Slow-ramp external supplies leave EN in an indeterminate region and the chip enters a partial-reset state — peripherals come up but Matter's BLE+WiFi PHY init silently locks the CPU. | Lamp boots, motor / knob / LEDs work for ~5 s, then the CPU hangs the instant `esp_matter::start()` runs. No brownout (`0x09`) or panic (`0x04`) reset reason. | **Open issue** — see § 7.1 below for the catalogue of attempts. Working hypothesis is a low-ESL cap directly across `5V`/GND at the XIAO pins; not yet stable. | [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702). |
+
+---
+
+## 7.1 Known limitation: external 5 V boot fails
+
+The Mean Well → Mini360 → XIAO `5 V` path (the production wiring) **does not
+yet boot reliably**. Development currently uses USB-C power on the XIAO
+connector. This section catalogues what we tried so the next iteration doesn't
+retread.
+
+### Symptom
+
+1. Apply external 5 V (no USB connected).
+2. Chip starts. Boot banner prints, motor/knob/LEDs come up for ~5 s thanks to
+   the deferred `matter_app_init()` (see `s3/m4-matter/main/main.cpp`). Knob
+   moves the motor; LEDs follow shaft angle. Local control works.
+3. The deferred Matter task fires at +5 s. The instant `esp_matter::start()`
+   kicks off the BLE controller + WiFi PHY init the **CPU silently hangs** —
+   the chip stops responding, no further serial output, motor freezes.
+4. No reset event is recorded. The `[boot_dbg] cur_reset=...` logger (which
+   persists `esp_reset_reason()` to NVS in our `boot_dbg` namespace, surviving
+   even a full power-cycle) only ever shows `POWERON` (`0x01`) or USB-host
+   reset (`0x0B`) reasons after this — never `BROWNOUT` (`0x09`) or
+   `PANIC` (`0x04`). So it's not a voltage dip, not a software panic — the
+   chip is genuinely wedged in a partial-reset state.
+
+### Root cause (Seeed forum 283702 post 10)
+
+The XIAO's `EN`/`RST` pin is internally driven by a weak pull-up + a small
+RC cap. USB-C power rises in microseconds — a clean voltage step — so EN
+crosses logic-high cleanly and the chip executes its full reset sequence. Any
+slower-rising 5 V supply (Mini360, even an industrial-grade buck) leaves EN
+sitting in an indeterminate region for tens of milliseconds. Some peripherals
+come out of reset, but anything sensitive to a clean reset edge — notably the
+radio PHY init — silently locks up.
+
+### What we tried that did NOT fix it
+
+- 470 µF bulk cap on the rail (upstream on a breadboard).
+- SS14 Schottky diode in series between Mini360 OUT+ and XIAO `5V`.
+- Replacing the Mini360 with an **industrial-grade 24→5 V converter** with
+  much better transient response — same failure.
+- Feeding **3.3 V directly** to the XIAO's `3V3` castellation pad
+  (bypassing the onboard LDO entirely) — same failure, ruling out any LDO
+  dropout / noise issue.
+- `esp_brownout_disable()` at the very top of `app_main` — confirmed not a
+  brownout (no `0x09` reset reason ever recorded).
+- Capping `CONFIG_ESP_PHY_MAX_WIFI_TX_POWER` to 12 dBm — no effect (PHY
+  *initial* calibration current spike is silicon-fixed and not bounded by
+  this Kconfig).
+- Deferring `matter_app_init()` by 5 s on a low-priority core-0 task — the
+  lockup just moves to t+5 s instead of t+0.
+- Disabling `CONFIG_USJ_ENABLE_USB_SERIAL_JTAG` entirely (no USB peripheral
+  active at all) — same failure, ruling out USB-CDC-related interference.
+
+### Path forward
+
+Most of our cap tests had the bulk cap *upstream* (breadboard rail), so trace
+inductance limits how fast it can deliver charge to the chip pins during the
+sub-millisecond PHY-init spike. Next thing to try: a **low-ESR electrolytic
+soldered directly between the XIAO's `5V` and `GND` castellation pads with
+sub-5 mm leads**, ideally paired with a 10 µF X7R ceramic in parallel for the
+high-frequency edge. The cap+diode hardware combo is in the BOM as the
+intended production parts; sizing and physical placement need iteration on
+the actual board.
+
+### Path NOT pursued
+
+The canonical fix per the forum thread is a 3.0 V voltage supervisor IC
+(MCP809-class, SOT-23-3) tied to the XIAO `RST` pad with open-drain RESET.
+This was researched but rejected for this project — going with the cap+diode
+path instead.
+
+### Reference
+
+- Memory file `project_xiao_s3_external_power.md`
+- [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702) post 10 (PJ_Glasso) — root-cause description and supervisor-IC fix.
 
 ---
 
@@ -490,6 +579,9 @@ to 240 MHz per the workarounds table, which makes the outcome consistent.
 **Motor audibility regresses after a factory-reset boot** — the direction
 sweep inside `initFOC` only runs when `foc_cal` is empty. Once run, the
 direction is re-cached to NVS and subsequent boots skip it.
+
+**Chip works on USB but locks up the moment Matter starts on external 5 V** —
+that's the open EN-pin partial-reset issue. See § 7.1 for the catalogue.
 
 **`CMake Error: Failed to resolve component 'button' / 'led_driver'`** —
 the esp-matter device_hal components need both in `EXTRA_COMPONENT_DIRS`
