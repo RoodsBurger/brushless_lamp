@@ -1,14 +1,11 @@
 ## M4-matter, target-agnostic settings that layer on top of sdkconfig.defaults.common.
 ## Target-specific bits (flash size, USB console) live in sdkconfig.defaults.esp32s3.
 
-## Quiet logging by default. USB-CDC console blocks per-byte for up to 50 ms when
-## no host reader is attached (TX_FLUSH_TIMEOUT_US in usb_serial_jtag_vfs.c), and
-## Matter's INFO-level chatter during commissioning pushes the CHIP task into
-## that backpressure — which shows up as failed commissioning when no serial
-## monitor is open but clean when one is. Runtime level = WARN suppresses the
-## per-byte stall; CHIP_DETAIL_LOGGING off trims CHIP's own verbose internals.
-## LOG_MAXIMUM_LEVEL from common keeps DEBUG compiled in so esp_log_level_set()
-## can raise it at runtime for a debugging session.
+## WARN default + CHIP_DETAIL off keeps USB-CDC TX volume low. The console
+## blocks per-byte ~50 ms (TX_FLUSH_TIMEOUT_US in usb_serial_jtag_vfs.c) when
+## no host reader is attached; INFO chatter during PASE/AddNOC pushes the
+## CHIP task into that stall and times commissioning out. LOG_MAXIMUM_LEVEL
+## from common stays at DEBUG so esp_log_level_set() can raise at runtime.
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 # CONFIG_LOG_DEFAULT_LEVEL_INFO is not set
 CONFIG_CHIP_DETAIL_LOGGING=n
@@ -83,7 +80,13 @@ CONFIG_BT_CTRL_PINNED_TO_CORE_0=y
 
 ## One dynamic endpoint (ColorTemperatureLight) is all we need for now.
 CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=2
-CONFIG_ENABLE_CHIP_SHELL=y
+
+## CHIP_SHELL OFF: the shell's `console` task spins on `chip::Shell::Engine::
+## RunMainLoop` reading stdin via linenoise. With no USB host attached
+## `usb_serial_jtag_read()` returns -1 immediately, so the shell tight-loops
+## on a non-blocking read, never yields, starves the IDLE task on core 0,
+## and the Task WDT panics ~5 s later. Required off for external-power boot.
+# CONFIG_ENABLE_CHIP_SHELL is not set
 CONFIG_ENABLE_OTA_REQUESTOR=y
 CONFIG_ENABLE_WIFI_AP=n
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n

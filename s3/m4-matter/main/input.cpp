@@ -1,7 +1,5 @@
-// M4 input — same quadrature + button state machine as M3, but the 9 s hold calls
-// esp_matter::factory_reset() (wipes fabric + KVS + reboots) instead of a plain
-// nvs_flash_erase(). Knob nudges also arm motor_request_matter_sync_on_settle so
-// the matter_app's settle callback pushes the new level once the lamp comes to rest.
+// Knob + button: knob nudges motor target and arms a Matter settle push;
+// 9 s button hold calls esp_matter::factory_reset.
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>

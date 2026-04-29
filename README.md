@@ -11,8 +11,7 @@ FOC loop itself on a dedicated core while WiFi, BLE, and CHIP share the other.
 
 That doc is the source of truth for everything current: BOM, wiring, toolchain,
 build + flash, per-device Matter provisioning, code architecture, troubleshooting,
-and the open external-power limitation we're still working on (see § 7.1).
-Start there.
+and the diagnostic story for the external-5 V boot path (see § 7.1). Start there.
 
 ## Repo layout
 

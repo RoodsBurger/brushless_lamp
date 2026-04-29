@@ -38,3 +38,10 @@ CONFIG_CHIP_FACTORY_NAMESPACE_PARTITION_LABEL="fctry"
 ## Plain-blob DAC from our mfg_tool invocation needs both visible.
 # CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL is not set
 # CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS is not set
+
+## Auto-open the commissioning window at boot when not yet commissioned —
+## starts BLE advertising so Apple Home / Google Home can discover the
+## device. Kconfig default is y but we explicitly assert it here so a stray
+## "is not set" override (e.g. from a stale sdkconfig) can't disable
+## commissioning silently.
+CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART=y

@@ -21,11 +21,9 @@ CONFIG_ARDUINO_SERIAL_EVENT_RUN_CORE0=y
 CONFIG_ARDUINO_UDP_RUN_CORE0=y
 
 ## Selectively compile only what we use from arduino-esp32. Matter is disabled
-## because its Matter.h pulls <esp_matter.h> without a proper dep, and the other
-## disables save flash / avoid chained dependencies.
-## ESP_SR is S3/P4-only and its header hard-includes ESP_I2S.h — on C6 we never
-## saw this because ESP_SR wasn't even built; on S3 it IS and the unresolved
-## include breaks the link unless we disable ESP_SR explicitly.
+## because its Matter.h pulls <esp_matter.h> without a proper dep; ESP_SR is
+## disabled because its header hard-includes ESP_I2S which we also disable;
+## the rest save flash and avoid chained dependencies.
 CONFIG_ARDUINO_SELECTIVE_COMPILATION=y
 CONFIG_ARDUINO_SELECTIVE_Matter=n
 CONFIG_ARDUINO_SELECTIVE_OpenThread=n

@@ -71,10 +71,9 @@ Matter). The rest of this doc targets M4.
 
 ### Wiring
 
-> **Production target shown.** The lamp does not yet boot reliably on this
-> external-supply path — see § 7.1 "Known limitation: external 5 V boot fails."
-> Until the cap + diode configuration is dialled in, develop with USB-C power
-> on the XIAO connector; everything else stays the same.
+> **Production target shown.** The external-supply path now boots reliably as
+> of 2026-04-28 (CHIP_SHELL fix in § 7.1). The 470 µF + SS14 stays in the BOM
+> as transient defense against Mini360 droop.
 
 ```
               ┌──────────────────┐
@@ -202,9 +201,6 @@ sed -i '' 's|version: "~1.3.0"|version: "~1.2.0"|' \
 Also confirm `connectedhomeip` PR #42320 is cherry-picked on the submodule
 — it's the WiFi-reconnect fix that survives commissioning drop-outs.
 
-See `../PHASE15-S3-MIGRATION.md` for the full design / pin-strap / chip
-manifest rationale.
-
 ---
 
 ## 5. Build + flash
@@ -213,6 +209,9 @@ manifest rationale.
 Projects/BrushlessLamp`) contains a space which libsodium's unquoted `-include`
 chokes on, so every build runs in a no-space shadow directory under
 `~/esp/brushlesslamp-s3/`.
+
+> Substitute `<PORT>` with your XIAO's USB-CDC device (typically
+> `/dev/cu.usbmodem1101` on macOS; check with `ls /dev/cu.usbmodem*`).
 
 ```sh
 # One-time rsync + every edit after
@@ -225,7 +224,7 @@ rsync -a --delete \
 cd ~/esp/brushlesslamp-s3/m4-matter
 idf.py set-target esp32s3
 idf.py build
-idf.py -p /dev/cu.usbmodem101 flash monitor
+idf.py -p <PORT> flash monitor
 ```
 
 M1 / M2 / M3 are the staged debug scaffolds — same recipe, swap the stage
@@ -245,7 +244,7 @@ to fit Teyleten's smaller flash (`partitions.csv`, `sdkconfig.defaults`).
 cd ~/esp/brushlesslamp-s3/supermini_m4
 idf.py set-target esp32s3
 idf.py build
-idf.py -p /dev/cu.usbmodem101 flash monitor
+idf.py -p <PORT> flash monitor
 ```
 
 ### Stage acceptance
@@ -317,9 +316,9 @@ the raw passcode).
 ```sh
 B1=~/esp/brushlesslamp-s3/m4-matter/mfg_out/out/fff2_8001/<uuid>
 
-idf.py -p /dev/cu.usbmodem101 erase-flash        # wipe any prior state
+idf.py -p <PORT> erase-flash        # wipe any prior state
 
-python -m esptool --chip esp32s3 -p /dev/cu.usbmodem101 -b 460800 \
+python -m esptool --chip esp32s3 -p <PORT> -b 460800 \
   --before default_reset --after hard_reset write_flash \
   --flash_mode dio --flash_size 8MB --flash_freq 80m \
   0x0        build/bootloader/bootloader.bin        \
@@ -377,84 +376,51 @@ fctry            0x420000 0x06000
 | ESP-IDF default CPU frequency is 160 MHz; software ECDSA (PASE_Pake2, CSR keypair) at that clock takes ~800 ms / ~530 ms and blows past the Matter commissioner's per-step timeout (`CHIP_ERROR_TIMEOUT` 32). | Commissioning aborts after CSRRequest with `Long dispatch time: 530 ms` in the CHIP log and no fabric added. | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` + `CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y` in `sdkconfig.defaults.esp32s3` — runs at the S3's rated 240 MHz and cuts crypto latency by ~1/3. | — |
 | Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
 | `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
-| XIAO S3's EN pin uses a weak pull-up + small cap. USB power rises in microseconds (clean step) so EN crosses logic-high cleanly. Slow-ramp external supplies leave EN in an indeterminate region and the chip enters a partial-reset state — peripherals come up but Matter's BLE+WiFi PHY init silently locks the CPU. | Lamp boots, motor / knob / LEDs work for ~5 s, then the CPU hangs the instant `esp_matter::start()` runs. No brownout (`0x09`) or panic (`0x04`) reset reason. | **Open issue** — see § 7.1 below for the catalogue of attempts. Working hypothesis is a low-ESL cap directly across `5V`/GND at the XIAO pins; not yet stable. | [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702). |
+| `CONFIG_ENABLE_CHIP_SHELL=y` (esp-matter default) starts a `console` task running `chip::Shell::Engine::Root().RunMainLoop()` → `linenoise()` → `usb_serial_jtag_read()`. With no USB host attached the read returns `-1` immediately on every call without yielding; the task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at 5 s. | Lamp boots, motor / knob / LEDs interactive for ~5 s, then chip resets in a loop. ISR heartbeat keeps blinking until the panic, so the device looks "wedged." Reset reason `0x06` (`ESP_RST_TASK_WDT`) once `CONFIG_ESP_TASK_WDT_PANIC=y` is also set. | `# CONFIG_ENABLE_CHIP_SHELL is not set` + `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/m4-matter/sdkconfig.defaults*`. Diagnostic story in § 7.1. | — (CHIP shell is dev-only; safe to disable on USB-Serial-JTAG-only boards.) |
 
 ---
 
-## 7.1 Known limitation: external 5 V boot fails
+## 7.1 Resolved: external 5 V boot now works (2026-04-28)
 
-The Mean Well → Mini360 → XIAO `5 V` path (the production wiring) **does not
-yet boot reliably**. Development currently uses USB-C power on the XIAO
-connector. This section catalogues what we tried so the next iteration doesn't
-retread.
+> **Resolution:** `# CONFIG_ENABLE_CHIP_SHELL is not set` in `s3/m4-matter/sdkconfig.defaults`,
+> plus `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/m4-matter/sdkconfig.defaults.esp32s3`.
+> The chip wasn't wedged in an EN-pin partial-reset state — it was crash-rebooting
+> from a starved core-0 IDLE task on every host-less boot.
 
 ### Symptom
 
-1. Apply external 5 V (no USB connected).
-2. Chip starts. Boot banner prints, motor/knob/LEDs come up for ~5 s thanks to
-   the deferred `matter_app_init()` (see `s3/m4-matter/main/main.cpp`). Knob
-   moves the motor; LEDs follow shaft angle. Local control works.
-3. The deferred Matter task fires at +5 s. The instant `esp_matter::start()`
-   kicks off the BLE controller + WiFi PHY init the **CPU silently hangs** —
-   the chip stops responding, no further serial output, motor freezes.
-4. No reset event is recorded. The `[boot_dbg] cur_reset=...` logger (which
-   persists `esp_reset_reason()` to NVS in our `boot_dbg` namespace, surviving
-   even a full power-cycle) only ever shows `POWERON` (`0x01`) or USB-host
-   reset (`0x0B`) reasons after this — never `BROWNOUT` (`0x09`) or
-   `PANIC` (`0x04`). So it's not a voltage dip, not a software panic — the
-   chip is genuinely wedged in a partial-reset state.
+Boot banner prints, motor / knob / LEDs come up for ~5 s thanks to the
+deferred `matter_app_init()`, then the chip resets in a loop or appears to
+freeze (depends on whether `CONFIG_ESP_TASK_WDT_PANIC` is set). Reset reason
+is `0x06` (`ESP_RST_TASK_WDT`) once panic mode is on.
 
-### Root cause (Seeed forum 283702 post 10)
+### Root cause
 
-The XIAO's `EN`/`RST` pin is internally driven by a weak pull-up + a small
-RC cap. USB-C power rises in microseconds — a clean voltage step — so EN
-crosses logic-high cleanly and the chip executes its full reset sequence. Any
-slower-rising 5 V supply (Mini360, even an industrial-grade buck) leaves EN
-sitting in an indeterminate region for tens of milliseconds. Some peripherals
-come out of reset, but anything sensitive to a clean reset edge — notably the
-radio PHY init — silently locks up.
+`CONFIG_ENABLE_CHIP_SHELL=y` (esp-matter Kconfig default) spawns a
+`ChipShellTask` running `linenoise()` → `usb_serial_jtag_read()`. With no
+USB host attached the read returns `-1` immediately without yielding; the
+task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at
+5 s.
 
-### What we tried that did NOT fix it
+### Fix
 
-- 470 µF bulk cap on the rail (upstream on a breadboard).
-- SS14 Schottky diode in series between Mini360 OUT+ and XIAO `5V`.
-- Replacing the Mini360 with an **industrial-grade 24→5 V converter** with
-  much better transient response — same failure.
-- Feeding **3.3 V directly** to the XIAO's `3V3` castellation pad
-  (bypassing the onboard LDO entirely) — same failure, ruling out any LDO
-  dropout / noise issue.
-- `esp_brownout_disable()` at the very top of `app_main` — confirmed not a
-  brownout (no `0x09` reset reason ever recorded).
-- Capping `CONFIG_ESP_PHY_MAX_WIFI_TX_POWER` to 12 dBm — no effect (PHY
-  *initial* calibration current spike is silicon-fixed and not bounded by
-  this Kconfig).
-- Deferring `matter_app_init()` by 5 s on a low-priority core-0 task — the
-  lockup just moves to t+5 s instead of t+0.
-- Disabling `CONFIG_USJ_ENABLE_USB_SERIAL_JTAG` entirely (no USB peripheral
-  active at all) — same failure, ruling out USB-CDC-related interference.
+In `s3/m4-matter/sdkconfig.defaults`:
+- `# CONFIG_ENABLE_CHIP_SHELL is not set`
+- `CONFIG_ESP_TASK_WDT_PANIC=y` (production safety; clean reboot if any task
+  ever starves IDLE again).
 
-### Path forward
+### Status of the cap+diode hardware
 
-Most of our cap tests had the bulk cap *upstream* (breadboard rail), so trace
-inductance limits how fast it can deliver charge to the chip pins during the
-sub-millisecond PHY-init spike. Next thing to try: a **low-ESR electrolytic
-soldered directly between the XIAO's `5V` and `GND` castellation pads with
-sub-5 mm leads**, ideally paired with a 10 µF X7R ceramic in parallel for the
-high-frequency edge. The cap+diode hardware combo is in the BOM as the
-intended production parts; sizing and physical placement need iteration on
-the actual board.
-
-### Path NOT pursued
-
-The canonical fix per the forum thread is a 3.0 V voltage supervisor IC
-(MCP809-class, SOT-23-3) tied to the XIAO `RST` pad with open-drain RESET.
-This was researched but rejected for this project — going with the cap+diode
-path instead.
+The 470 µF + SS14 Schottky combo stays in the BOM as transient defense
+against Mini360 droop, but it is **no longer the gating fix**. A 3.0 V
+voltage supervisor IC (MCP809-class) on the RST pad is still explicitly not
+pursued — unnecessary now.
 
 ### Reference
 
-- Memory file `project_xiao_s3_external_power.md`
-- [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702) post 10 (PJ_Glasso) — root-cause description and supervisor-IC fix.
+- [`project_chip_shell_external_power.md`](../../.claude/projects/-Users-rodolfo-Documents-Personal-Projects-BrushlessLamp/memory/project_chip_shell_external_power.md) — the actual root cause + fix.
+- [`project_xiao_s3_external_power.md`](../../.claude/projects/-Users-rodolfo-Documents-Personal-Projects-BrushlessLamp/memory/project_xiao_s3_external_power.md) — preserved as historical context; failure-mode attribution superseded.
+- [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702) — the EN-pin partial-reset hypothesis. Real on some boards / supplies; was the wrong root cause for ours.
 
 ---
 
@@ -576,12 +542,14 @@ polling would happen to keep tasks scheduled fast enough to squeak inside
 the commissioner's timeout; closing the monitor removes that luck. Bump
 to 240 MHz per the workarounds table, which makes the outcome consistent.
 
-**Motor audibility regresses after a factory-reset boot** — the direction
-sweep inside `initFOC` only runs when `foc_cal` is empty. Once run, the
-direction is re-cached to NVS and subsequent boots skip it.
+**Motor is briefly louder on the boot after a factory reset** — `initFOC`
+re-runs the full direction sweep when `foc_cal` is empty. The chip caches
+`sensor_direction` to NVS on first calibration; subsequent boots skip the
+sweep and stay quiet.
 
-**Chip works on USB but locks up the moment Matter starts on external 5 V** —
-that's the open EN-pin partial-reset issue. See § 7.1 for the catalogue.
+**Chip works on USB but reset-loops on external 5 V** — your sdkconfig has
+`CONFIG_ENABLE_CHIP_SHELL=y`. Default is now `=n`; verify with
+`grep CHIP_SHELL build/sdkconfig`. Background in § 7.1.
 
 **`CMake Error: Failed to resolve component 'button' / 'led_driver'`** —
 the esp-matter device_hal components need both in `EXTRA_COMPONENT_DIRS`

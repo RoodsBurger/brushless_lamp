@@ -110,40 +110,14 @@ static void motor_foc_task(void *) {
 
     printf("[motor] motor.init()=%d\n", s_motor.init());
 
-    // Cache disabled — initFOC runs the full rotation sweep every boot.
-    int8_t  saved_dir = 0;
-#if 0
-    {
-        nvs_handle_t h;
-        if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-            nvs_get_i8(h, NVS_KEY_DIRECTION, &saved_dir);
-            nvs_close(h);
-        }
-    }
-    if (saved_dir == (int8_t)Direction::CW || saved_dir == (int8_t)Direction::CCW) {
-        s_motor.sensor_direction = (Direction)saved_dir;
-    }
-#endif
-
+    // MT6701 incremental quadrature resets to 0 on every boot, so initFOC
+    // runs the full rotation sweep every time — no point caching direction.
     int foc_ok = s_motor.initFOC();
     printf("[motor] initFOC()=%d zero_elec=%.4f dir=%d\n",
            foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
     if (!foc_ok) {
         printf("[motor] FOC init FAILED\n");
     }
-#if 0
-    else if (saved_dir == 0 &&
-             (s_motor.sensor_direction == Direction::CW || s_motor.sensor_direction == Direction::CCW)) {
-        // Cache the direction so future boots skip the rotation sweep.
-        nvs_handle_t h;
-        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-            int8_t d = (int8_t)s_motor.sensor_direction;
-            nvs_set_i8(h, NVS_KEY_DIRECTION, d);
-            nvs_commit(h);
-            nvs_close(h);
-        }
-    }
-#endif
 
     s_motor.disable();   // boot idle; first target change wakes the task
 
