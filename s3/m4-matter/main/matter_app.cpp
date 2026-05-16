@@ -144,15 +144,10 @@ void matter_app_init() {
     esp_err_t err = esp_matter::start(event_cb);
     if (err != ESP_OK) { ESP_LOGE(TAG, "esp_matter::start err=%d", err); return; }
 
-    // Print VID/PID/discriminator at WARN log level so the user can match the
-    // device against the per-device row in mfg_out/.../summary-*.csv. Direct
-    // printf, not ChipLogProgress — INFO-level chatter on chip[*] tags during
-    // PASE/AddNOC backpressures USB-CDC TX and times commissioning out.
-    //
-    // The CSV's `manualcode` and `qrcode` columns are the ones to commission
-    // with: factory data stores only the Spake2+ verifier so on-device code
-    // generation falls back to the default test passcode (20202021), which
-    // would NOT match the verifier and would fail Spake2+.
+    // Direct printf (not ChipLogProgress): INFO chatter on chip[*] tags during
+    // PASE/AddNOC backpressures USB-CDC TX and times commissioning out. Use
+    // mfg_out/.../summary-*.csv's manualcode/qrcode columns — factory data only
+    // stores the Spake2+ verifier, so on-device code generation can't reproduce it.
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
         uint16_t vid = 0, pid = 0, discriminator = 0;
         if (auto *info = chip::DeviceLayer::GetDeviceInstanceInfoProvider()) {
@@ -189,14 +184,16 @@ extern "C" void matter_push_onoff(bool on) {
     s_on_off = on;
     apply_state();
     auto *p = new OnOffPush{ s_endpoint_id, on };
-    chip::DeviceLayer::PlatformMgr().ScheduleWork(matter_push_onoff_work,
-                                                  reinterpret_cast<intptr_t>(p));
+    CHIP_ERROR err = chip::DeviceLayer::PlatformMgr().ScheduleWork(
+        matter_push_onoff_work, reinterpret_cast<intptr_t>(p));
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "ScheduleWork(onoff) failed: %" CHIP_ERROR_FORMAT, err.Format());
+        delete p;
+    }
 }
 
-// Knob-driven Level push; marshals attribute::update onto the CHIP task.
-// also_on / force_off are mutually exclusive — knob motion up from rest implies
-// OnOff=true (Home app can't show a non-zero brightness while Off), knob motion
-// down to zero implies OnOff=false (else Home stays at "On, 1%" since MinLevel=1).
+// also_on / force_off are mutually exclusive: knob up from rest → OnOff=true;
+// knob down to 0 → OnOff=false (else Home stays at "On, 1%" because MinLevel=1).
 namespace {
 struct LevelPush { uint16_t ep; uint8_t level; bool also_on; bool force_off; };
 }
@@ -244,6 +241,10 @@ extern "C" void matter_push_level_from_angle(float angle_rad) {
              also_on ? " +OnOff=true" : (force_off ? " +OnOff=false" : ""));
 
     auto *p = new LevelPush{ s_endpoint_id, new_level, also_on, force_off };
-    chip::DeviceLayer::PlatformMgr().ScheduleWork(matter_push_level_work,
-                                                  reinterpret_cast<intptr_t>(p));
+    CHIP_ERROR err = chip::DeviceLayer::PlatformMgr().ScheduleWork(
+        matter_push_level_work, reinterpret_cast<intptr_t>(p));
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "ScheduleWork(level) failed: %" CHIP_ERROR_FORMAT, err.Format());
+        delete p;
+    }
 }

@@ -91,6 +91,28 @@ CONFIG_ENABLE_OTA_REQUESTOR=y
 CONFIG_ENABLE_WIFI_AP=n
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 
+## Clean reboot if any task starves IDLE — prefer reset over freeze on regression.
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+## TCPIP task headroom for the mDNS + CASE burst right after commissioning.
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+
+## Symmetric AMPDU window — RX is already 16; bring TX up to match.
+CONFIG_ESP_WIFI_TX_BA_WIN=16
+
+## Skip the ~1 s ARP probe after each Wi-Fi reconnect; Matter wants the IP back fast.
+CONFIG_LWIP_DHCP_DOES_ARP_CHECK=n
+
+## Headroom for multiple controllers (Apple + Google + HA) subscribing concurrently.
+CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=6
+CONFIG_MAX_CHIP_SUBSCRIPTIONS=6
+
+## Light heap poisoning — names the offender on a free()/realloc() of a corrupted block.
+CONFIG_HEAP_POISONING_LIGHT=y
+
+## mDNS metadata slots for Matter operational discovery + commissioner advertising.
+CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4
+
 ## Cluster trim — keep only what ColorTemperatureLight uses (OnOff + LevelControl +
 ## ColorControl are on by default). Everything below saves flash.
 CONFIG_SUPPORT_ACCOUNT_LOGIN_CLUSTER=n

@@ -1,12 +1,6 @@
-// M3+ LED controller — CylinderLamp semantics on arduino-esp32 LEDC. Two channels
-// (WW/CW) at 25 kHz / 8-bit. The fader task runs at LED_FADE_PERIOD_MS on CORE_OTHERS
-// and steps current_ww/current_cw one LED_FADE_STEP at a time toward target_ww/cw,
-// where the target is recomputed from (on, colortemp, max_duty) every tick.
-//
-// Pulse feedback (leds_pulse): spawns a one-shot task that raises s_pulse_active,
-// waits for the fader to notice, then hand-writes 20-step fade-down/pause/fade-up/
-// pause cycles via ledcWrite() directly. On exit it lowers the flag; the fader picks
-// back up from whatever current_ww/cw the pulse left behind.
+// LEDC dual-channel WW/CW at 25 kHz / 8-bit. Fader task on CORE_OTHERS steps current
+// → target one LED_FADE_STEP at a time. leds_pulse spawns a one-shot task that owns
+// the pins during its blink cycle via s_pulse_active.
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -19,16 +13,13 @@
 #include "config.h"
 #include "pins.h"
 
-// Persist LED max duty across boots — single-click + knob lets the user set their
-// preferred brightness and expect it to stick. Debounced save via LED_NVS_DEBOUNCE
-// after the last nudge so a continuous knob turn doesn't thrash flash.
+// LED max duty persists across boots; debounced LED_NVS_DEBOUNCE ms after the last
+// knob nudge to spare flash.
 static constexpr const char    *LED_NVS_NS       = "leds";
 static constexpr const char    *LED_NVS_KEY_DUTY = "maxduty";
 static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;  // ms
 
-// Target state (writable from input task / Matter callback on CORE_OTHERS). s_on
-// defaults true on M3 — the angle curve already does the visual off-at-zero work,
-// so M3 never touches the flag. M4 will bind this to Matter's OnOff cluster.
+// Target state — written from input task / Matter callback on CORE_OTHERS.
 static volatile bool     s_on           = true;
 static volatile uint16_t s_colortemp    = COLORTEMP_DEFAULT;
 static volatile uint8_t  s_max_duty     = LED_MAX_DUTY_DEFAULT;
@@ -37,15 +28,10 @@ static volatile uint8_t  s_max_duty     = LED_MAX_DUTY_DEFAULT;
 static uint8_t  s_current_ww = 0;
 static uint8_t  s_current_cw = 0;
 
-// Pulse task coordination. While s_pulse_active the fader skips its ledcWrite so the
-// pulse task owns the pins; both run on CORE_OTHERS so there's no memory-fence work.
+// While s_pulse_active the fader skips ledcWrite so the pulse task owns the pins.
 static volatile bool s_pulse_active = false;
 
-// Perceptual curve: treats max_duty as "how bright it should feel" and applies the
-// gamma to produce an actual LEDC duty cycle. At LED_GAMMA = 2.2 a knob step from
-// 64 → 72 (perceptual) raises actual duty ~4 units; at 200 → 208, it raises ~12.
-// That matches Stevens' power law for visual brightness, so equal knob steps feel
-// roughly equal visually.
+// Apply gamma to perceptual duty so equal knob steps feel visually equal (Stevens' power law).
 static uint8_t gamma_correct(uint8_t perceptual) {
     if (perceptual == 0) return 0;
     float f = (float)perceptual * (1.0f / 255.0f);
@@ -155,11 +141,8 @@ void leds_start_fader() {
     xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 3072, nullptr, 2, nullptr, CORE_OTHERS);
 }
 
-// Pulse: N cycles of 0 → peak → 0 at the current max_duty × colortemp. Unlike
-// CylinderLamp's from-current pattern, peak here is independent of shaft angle
-// so the feedback blink is equally visible whether the lamp is on or off. 160 ms
-// ramp each way + 80 ms dwell. On exit the pins are at 0 and the fader resumes
-// from there on its next tick, ramping up to whatever target the angle curve wants.
+// N cycles of 0 → peak → 0 (or current → 0 → current if lit), 160 ms ramp + 80 ms
+// dwell; ends at original state so the fader has nothing to re-ramp.
 static void leds_pulse_task(void *param) {
     uint8_t count = (uint8_t)(uintptr_t)param;
     uint8_t flash_ww = 0, flash_cw = 0;

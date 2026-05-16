@@ -41,9 +41,8 @@ extern "C" void app_main() {
 
     motor_set_settle_callback(matter_push_level_from_angle);
 
-    // Order matters: Matter's BLE / WiFi / CHIP stack comes up on a quiet core
-    // before the FOC busy-wait task starts pegging core 1, otherwise the
-    // commissioner aborts after CSRRequest with CHIP_ERROR_TIMEOUT (32).
+    // Order matters: Matter (BLE / Wi-Fi / CHIP) must be up before the FOC busy-wait
+    // pegs core 1, otherwise CSRRequest times out with CHIP_ERROR_TIMEOUT (32).
     leds_init();
     matter_app_init();
     leds_start_fader();

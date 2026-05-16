@@ -1,21 +1,13 @@
-// FOC controller shared by every S3 stage. Runs SimpleFOC in velocity mode on
-// a dedicated core-1 task; the position loop is closed here in the app layer
-// with a pure physics-bounded trapezoidal profile and an M2-proven idle-disable.
-//
-// Two quirks baked in:
-//   - motor.disable() writes setPwm(0,0,0) once; the very next move() re-drives
-//     phases. So while idle-disabled we skip loopFOC()/move() entirely — the
-//     encoder ISR keeps shaft_angle fresh in the background, and the next
-//     target change wakes the task.
-//   - attachInterrupt() binds to the calling core. Calling
-//     encoder.enableInterrupts() from inside the motor task keeps the GPIO ISR
-//     co-resident with the FOC loop so noInterrupts() in Encoder::update()
-//     actually blocks it.
+// FOC + position loop on core 1. Encoder ISR is attached from inside the task so
+// noInterrupts() (per-core) blocks it. While idle-disabled we skip loopFOC()/move()
+// so setPwm(0,0,0) sticks; the encoder ISR keeps shaft_angle live for the next
+// target change.
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_log.h>
 #include <esp_task_wdt.h>
 #include <nvs.h>
 #include <math.h>
@@ -24,18 +16,15 @@
 #include "config.h"
 #include "pins.h"
 
-// Cached FOC calibration: sensor_direction only. zero_electric_angle is NOT
-// cached — the MT6701 runs in incremental quadrature, so its counter starts at
-// 0 on every boot regardless of physical rotor position and a stale offset
-// would point Uq the wrong way. sensor_direction is a property of rotor
-// magnets vs encoder and is valid across reboots; caching it skips the loud
-// forward/reverse rotation sweep inside alignSensor().
+static const char *TAG = "motor";
+
+// Cache sensor_direction across boots; zero_electric_angle is recomputed because
+// MT6701 incremental quadrature resets to 0 on every boot.
 static constexpr const char *NVS_NS            = "foc_cal";
 static constexpr const char *NVS_KEY_DIRECTION = "dir";
 
-// FOC loop pacing. SimpleFOC produces the quietest PID output on this motor
-// around 5 kHz; the S3 FPU would otherwise run loopFOC at ~50 kHz. 200 µs
-// busy-wait holds the target period jitter-free below the FreeRTOS tick.
+// 200 µs busy-wait paces loopFOC at 5 kHz — quietest PID output on this motor; the
+// S3 FPU would otherwise free-run at ~50 kHz and whine.
 static constexpr uint32_t FOC_PERIOD_US = 200;
 
 static BLDCMotor       s_motor  (POLE_PAIRS);
@@ -84,10 +73,15 @@ static void motor_foc_task(void *) {
     }
     delay(2);
 
+    // Drop the per-core IDLE wdt before initFOC: the rotation sweep can run several
+    // seconds if the rotor sticks, and the busy-loop afterwards permanently starves IDLE.
+    esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR));
+
     s_driver.voltage_power_supply = SUPPLY_VOLTAGE;
     s_driver.voltage_limit        = VOLTAGE_LIMIT;
     s_driver.pwm_frequency        = PWM_FREQ_HZ;
-    printf("[motor] driver.init()=%d\n", s_driver.init());
+    int drv_ok = s_driver.init();
+    ESP_LOGI(TAG, "driver.init()=%d", drv_ok);
     s_motor.linkDriver(&s_driver);
 
     s_motor.phase_resistance     = PHASE_RESISTANCE;
@@ -108,15 +102,16 @@ static void motor_foc_task(void *) {
     s_motor.PID_velocity.output_ramp = PID_OUTPUT_RAMP;
     s_motor.LPF_velocity.Tf          = LPF_TF;
 
-    printf("[motor] motor.init()=%d\n", s_motor.init());
+    int mot_ok = s_motor.init();
+    ESP_LOGI(TAG, "motor.init()=%d", mot_ok);
 
-    // MT6701 incremental quadrature resets to 0 on every boot, so initFOC
-    // runs the full rotation sweep every time — no point caching direction.
     int foc_ok = s_motor.initFOC();
-    printf("[motor] initFOC()=%d zero_elec=%.4f dir=%d\n",
-           foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
+    ESP_LOGI(TAG, "initFOC()=%d zero_elec=%.4f dir=%d",
+             foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
     if (!foc_ok) {
-        printf("[motor] FOC init FAILED\n");
+        ESP_LOGE(TAG, "FOC init failed; halting motor task — check encoder + driver wiring");
+        s_motor.disable();
+        vTaskDelete(nullptr);
     }
 
     s_motor.disable();   // boot idle; first target change wakes the task
@@ -127,9 +122,6 @@ static void motor_foc_task(void *) {
     uint32_t next_foc_us       = micros();
     uint32_t motion_started_ms = 0;     // stall: 0 = not trying to move
     uint32_t stuck_since_ms    = 0;     // stall: 0 = shaft isn't frozen in this attempt
-
-    // Dedicated core: the motor task starves IDLE, so drop IDLE's wdt check.
-    esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR));
 
     while (true) {
         // Busy-wait to the next 200 µs boundary; if we fell behind by more
@@ -204,11 +196,8 @@ static void motor_foc_task(void *) {
             commanded_vel = desired_vel;
         }
 
-        // Stall detection: if commanded motion isn't reaching the shaft after
-        // WARMUP + TIMEOUT, snap the internal target to the current shaft (so
-        // pos_err→0 and at_rest idle-disables next tick) and tell Matter about
-        // the new resting position. A fresh target command re-engages the
-        // motor; if the block is still there, stall fires again.
+        // Stall: if commanded |v| > eps but shaft frozen past WARMUP+TIMEOUT, snap target
+        // to shaft so pos_err→0 and idle-disable fires; report new resting angle to Matter.
         bool trying_to_move = fabsf(commanded_vel) > STALL_VEL_EPS;
         if (trying_to_move) {
             uint32_t now_ms = millis();
@@ -218,7 +207,7 @@ static void motor_foc_task(void *) {
             if (past_warmup && shaft_frozen) {
                 if (stuck_since_ms == 0) stuck_since_ms = now_ms;
                 else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
-                    printf("[motor] STALL at %.2f rad\n", s_motor.shaft_angle);
+                    ESP_LOGW(TAG, "STALL at %.2f rad", s_motor.shaft_angle);
                     commanded_vel     = 0.0f;
                     s_target_angle    = s_motor.shaft_angle;
                     if (s_settle_cb) s_settle_cb(clamp_angle(s_motor.shaft_angle));
@@ -233,10 +222,8 @@ static void motor_foc_task(void *) {
             stuck_since_ms    = 0;
         }
 
-        // Idle-disable: all three (commanded, shaft, pos_err) at rest → start
-        // the idle timer; once expired the driver cuts PWM and we stop calling
-        // move() so setPwm(0,0,0) persists. Entry also fires the settle
-        // callback so Matter-slider or knob-initiated moves push back once.
+        // Idle-disable when commanded, shaft, and pos_err all rest below their eps; entry
+        // fires the settle callback so Matter learns knob-driven moves.
         bool at_rest = fabsf(commanded_vel)          < VEL_AT_REST_EPS &&
                        fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS &&
                        fabsf(pos_err)                < POS_AT_REST_EPS;

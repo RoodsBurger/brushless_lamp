@@ -76,8 +76,7 @@ static void on_triple_click() {
     float new_v = MOTION_VELOCITY_PRESETS[s_speed_idx];
     motor_set_motion_velocity(new_v);
     leds_pulse((uint8_t)(s_speed_idx + 1));
-    // Synchronous NVS commit (~10-30 ms) on the 10 ms input task; acceptable
-    // because the speed cycle is a rare discrete event, not a rapid gesture.
+    // Synchronous NVS commit (~10-30 ms); fine because triple-click is a rare discrete event.
     input_save_speed_idx();
     ESP_LOGI(TAG, "speed=%.1f rad/s", new_v);
 }

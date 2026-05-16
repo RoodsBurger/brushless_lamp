@@ -185,9 +185,13 @@ button.
 One-time, per development machine.
 
 ```sh
-source ~/esp/esp-idf/export.sh          # ESP-IDF v5.4.4
+source ~/esp/esp-idf-v5.5.4/export.sh   # ESP-IDF v5.5.4 — required by main/idf_component.yml (`idf: ">=5.5.0"`).
 source ~/esp/esp-matter/export.sh       # esp-matter release/v1.5
 ```
+
+`~/esp/esp-idf` (without the version suffix) is the legacy v5.4.4 install and will
+fail dependency-solving at reconfigure with `no versions of idf match >=5.5.0`. Keep
+both side by side; export the 5.5.4 one in this shell.
 
 `~/esp/esp-matter/connectedhomeip/connectedhomeip/config/esp32/components/chip/idf_component.yml` needs two version downgrades the first time you clone esp-matter:
 
@@ -377,6 +381,11 @@ fctry            0x420000 0x06000
 | Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
 | `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
 | `CONFIG_ENABLE_CHIP_SHELL=y` (esp-matter default) starts a `console` task running `chip::Shell::Engine::Root().RunMainLoop()` → `linenoise()` → `usb_serial_jtag_read()`. With no USB host attached the read returns `-1` immediately on every call without yielding; the task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at 5 s. | Lamp boots, motor / knob / LEDs interactive for ~5 s, then chip resets in a loop. ISR heartbeat keeps blinking until the panic, so the device looks "wedged." Reset reason `0x06` (`ESP_RST_TASK_WDT`) once `CONFIG_ESP_TASK_WDT_PANIC=y` is also set. | `# CONFIG_ENABLE_CHIP_SHELL is not set` + `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/m4-matter/sdkconfig.defaults*`. Diagnostic story in § 7.1. | — (CHIP shell is dev-only; safe to disable on USB-Serial-JTAG-only boards.) |
+| `motor_foc_task` deleted IDLE's task-WDT subscription on CORE_MOTOR *after* `initFOC()`. A long sensor-align sweep (stuck rotor, 24 V rail sag, encoder noise) on a fresh boot can take > 5 s, and the busy `motor_foc_task` (prio 20) prevents IDLE0 on core 1 from running. | TWDT panic on first boot only, reset reason `0x06`, before the "Ready." banner. Couldn't be reproduced on a free shaft. | `esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR))` hoisted to *before* the driver / motor init block in `s3/common/motor.cpp`. | — |
+| `s_motor.initFOC()` returning 0 (encoder fault, missed phase wire) didn't halt the FOC task — the busy loop ran on miscalibrated `zero_electric_angle` and drove Uq into the wrong electrical phase, repeatedly tripping DRV8313 OCP. | Motor whines or twitches randomly; no movement; `[motor] initFOC()=0` in the log. | After the log line, on `!foc_ok`: `vTaskDelete(nullptr)`; bridges stay grounded via the prior `s_motor.disable()`. `s3/common/motor.cpp`. | — |
+| `chip::DeviceLayer::PlatformMgr().ScheduleWork()` return ignored at the three `matter_push_*` sites. If the deferred-lambda queue is full (e.g., knob flood while Wi-Fi is stuck retransmitting), each failed schedule leaks the heap-allocated `OnOffPush`/`LevelPush` object. | Slow heap drift; eventual `LoadProhibited` after hours of stress (matches esp-matter#748). | Check `CHIP_ERROR` return; on non-OK, `delete p` and `ESP_LOGE`. `s3/m4-matter/main/matter_app.cpp`. | [esp-matter#748](https://github.com/espressif/esp-matter/issues/748). |
+| Default `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072` is tight under the operational mDNS + CASE burst right after commissioning. | Intermittent `LoadProhibited` in the lwIP/Matter mDNS path during the first ~30 s post-pairing. | `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096` in `s3/m4-matter/sdkconfig.defaults`. | — |
+| Default `CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=2` / `CONFIG_MAX_CHIP_SUBSCRIPTIONS=2` saturates when Apple Home + Google Home + Home Assistant all subscribe at once. | Stutter and "couldn't reach device" toasts in one ecosystem while another is active; eviction-and-renew loop. | Bumped to `6` / `6`. | — |
 
 ---
 
@@ -421,6 +430,70 @@ pursued — unnecessary now.
 - [`project_chip_shell_external_power.md`](../../.claude/projects/-Users-rodolfo-Documents-Personal-Projects-BrushlessLamp/memory/project_chip_shell_external_power.md) — the actual root cause + fix.
 - [`project_xiao_s3_external_power.md`](../../.claude/projects/-Users-rodolfo-Documents-Personal-Projects-BrushlessLamp/memory/project_xiao_s3_external_power.md) — preserved as historical context; failure-mode attribution superseded.
 - [Seeed forum 283702](https://forum.seeedstudio.com/t/external-power-to-the-5v-pin-does-not-work-for-xiao-esp32-s3-and-xiao-esp32-c3/283702) — the EN-pin partial-reset hypothesis. Real on some boards / supplies; was the wrong root cause for ours.
+
+---
+
+## 7.2 Matter reliability sdkconfig set
+
+The full tuning block applied to `s3/m4-matter/sdkconfig.defaults` on top of the
+esp-matter Kconfig defaults. Each one is independently motivated in the workarounds
+table or in commit messages; together they're the verified-stable set.
+
+```
+# CHIP_SHELL OFF — see § 7.1.
+# CONFIG_ENABLE_CHIP_SHELL is not set
+CONFIG_ESP_TASK_WDT_PANIC=y                                  # clean reboot if any task starves IDLE
+
+# Logging — keep USB-CDC TX volume low (CHIP detail INFO chatter backpressures the JTAG console).
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_CHIP_DETAIL_LOGGING=n
+CONFIG_CHIP_PROGRESS_LOGGING=y
+CONFIG_CHIP_ERROR_LOGGING=y
+
+# CHIP task placement + budgets — MRP retries dispatch promptly, subscription fan-out has room.
+CONFIG_CHIP_TASK_PRIORITY=2
+CONFIG_CHIP_TASK_STACK_SIZE=10240
+CONFIG_DISPATCH_EVENT_LONG_DISPATCH_TIME_WARNING_THRESHOLD_MS=200
+CONFIG_MRP_MAX_RETRANS=6
+CONFIG_MRP_RETRY_INTERVAL_SENDER_BOOST_FOR_WIFI_ETHERNET=100
+CONFIG_CHIP_DEVICE_CONFIG_FAILSAFE_EXPIRY_LENGTH_SEC=90
+CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=6
+CONFIG_MAX_CHIP_SUBSCRIPTIONS=6
+CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART=y
+
+# BLE — 517 MTU + DLE keeps Attestation / CSR / AddNOC in one indication; pin to core 0 (away from FOC).
+CONFIG_BT_NIMBLE_MEM_OPTIMIZATION=y
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=10
+CONFIG_BT_NIMBLE_ACL_BUF_SIZE=255
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
+CONFIG_BT_CTRL_PINNED_TO_CORE_0=y
+
+# Wi-Fi — RX buffers sized for the BLE→Wi-Fi handover + operational mDNS burst; symmetric AMPDU.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+CONFIG_ESP_WIFI_TX_BA_WIN=16
+
+# IP / lwIP — IPv6 pool for SLAAC + per-fabric + transients; TCPIP stack headroom for mDNS burst.
+CONFIG_LWIP_IPV6_NUM_ADDRESSES=8
+CONFIG_LWIP_IPV6_MEMP_NUM_ND6_QUEUE=5
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+CONFIG_LWIP_DHCP_DOES_ARP_CHECK=n                            # skip ~1 s probe on Wi-Fi reconnect
+CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4                          # mDNS metadata slots
+
+# Heap — light poisoning names the offender on a corruption panic; ~50 ns / op.
+CONFIG_HEAP_POISONING_LIGHT=y
+
+# We don't expose SoftAP / OTA is wired through esp-matter requestor.
+CONFIG_ENABLE_WIFI_AP=n
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_ENABLE_OTA_REQUESTOR=y
+```
+
+When in doubt run `diff <(grep -E '^[^#]' ~/esp/brushlesslamp-s3/m4-matter/build/sdkconfig | sort) <(grep -E '^[^#]' s3/m4-matter/sdkconfig.defaults | sort)` to confirm none of these silently regressed.
 
 ---
 
