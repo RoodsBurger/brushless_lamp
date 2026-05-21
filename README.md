@@ -17,14 +17,10 @@ and the diagnostic story for the external-5 V boot path (see § 7.1). Start ther
 
 ```
 s3/                  Current build (XIAO ESP32-S3 + esp-matter)
-  ├── m4-matter/     Production stage — full Matter ColorTemperatureLight
-  ├── m1-motor/      Stage 1 — motor bring-up
-  ├── m2-knob/       Stage 2 — + knob
-  ├── m3-leds/       Stage 3 — + LEDs
-  ├── supermini_m4/  Experimental alternate (Teyleten ESP32-S3 SuperMini)
-  ├── test/          Pure-IDF blink for hardware sanity checks
+  ├── firmware/      PRODUCTION — Matter ColorTemperatureLight
   ├── common/        Shared motor / pins / config
-  └── components/    Vendored SimpleFOC v2.4.0
+  ├── components/    Vendored SimpleFOC v2.4.0
+  └── archive/       Dev history + diagnostic targets (none ship)
 esp-idf/             Historical (XIAO ESP32-C6 build, frozen for rollback)
 ```
 

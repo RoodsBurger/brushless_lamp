@@ -321,20 +321,13 @@ static void motor_foc_task(void *) {
         bool should_enable = (millis() - last_active_ms) < IDLE_DISABLE_MS;
 
         if (should_enable) {
-            if (!s_motor.enabled) {
-                s_motor.enable();
-                // Reset ramp + stall trackers so stale state from before the disable window
-                // can't bias commanded_vel or false-trip the stall detector on re-engage.
-                commanded_vel     = 0.0f;
-                last_ramp_us      = 0;
-                motion_started_ms = 0;
-                stuck_since_ms    = 0;
-            }
+            if (!s_motor.enabled) s_motor.enable();
             s_motor.loopFOC();
             s_motor.move(commanded_vel);
         } else if (s_motor.enabled) {
             s_motor.disable();
             s_motor.PID_velocity.reset();
+            s_motor.shaft_velocity = 0.0f;
             commanded_vel = 0.0f;
             if (s_sync_pending && s_settle_cb) {
                 s_settle_cb(s_motor.shaft_angle);

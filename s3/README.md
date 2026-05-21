@@ -7,23 +7,22 @@ WiFi + BLE exposes the lamp to Apple Home / Google Home / SmartThings. The
 ESP32-S3 runs the full SimpleFOC v2.4.0 FOC loop itself (no external stepper
 driver) on a dedicated core while WiFi, BLE and CHIP share the other core.
 
-The firmware ships as four independently-buildable stages sharing the same
-FOC core; only the surface (knob, LEDs, Matter) changes.
-
 ```
 s3/
-├── components/SimpleFOC/        vendored Arduino-FOC v2.4.0
+├── firmware/                    PRODUCTION — Matter ColorTemperatureLight
 ├── common/                      shared motor.{h,cpp} / config.h / pins.h
-├── sdkconfig.defaults.common    stacked by every stage
-├── m1-motor/                    Stage 1 — audibility sweep
-├── m2-knob/                     Stage 2 — + knob velocity-nudge
-├── m3-leds/                     Stage 3 — + WW/CW angle-driven LEDs
-└── m4-matter/                   Stage 4 — + Matter ColorTemperatureLight
+├── components/SimpleFOC/        vendored Arduino-FOC v2.4.0
+├── sdkconfig.defaults.common    stacked by every build
+├── README.md                    this doc
+└── archive/                     dev history + diagnostic targets (none ship)
+    ├── milestones/m1-motor, m2-knob, m3-leds, supermini_m4
+    └── diagnostic/test, test_ble, test_ble_arduino, test_ble_arduino_async
 ```
 
-M4 is the production stage; M1–M3 are debug scaffolds retained for
-regression testing (bring up the motor quietly → add knob → add LEDs → add
-Matter). The rest of this doc targets M4.
+The rest of this doc targets `firmware/`. The archived milestones (`m1-motor` →
+`m2-knob` → `m3-leds`) are the incremental bring-up scaffolds — useful for
+regression-isolating a future change to the motor or knob layer; see
+`archive/README.md`.
 
 ---
 
@@ -209,7 +208,7 @@ Also confirm `connectedhomeip` PR #42320 is cherry-picked on the submodule
 
 ## 5. Build + flash
 
-`m4-matter/` is **the production build**. The project path (`Personal
+`firmware/` is **the production build**. The project path (`Personal
 Projects/BrushlessLamp`) contains a space which libsodium's unquoted `-include`
 chokes on, so every build runs in a no-space shadow directory under
 `~/esp/brushlesslamp-s3/`.
@@ -225,7 +224,7 @@ rsync -a --delete \
       "/Users/rodolfo/Documents/Personal Projects/BrushlessLamp/s3/" \
       ~/esp/brushlesslamp-s3/
 
-cd ~/esp/brushlesslamp-s3/m4-matter
+cd ~/esp/brushlesslamp-s3/firmware
 idf.py set-target esp32s3
 idf.py build
 idf.py -p <PORT> flash monitor
@@ -237,7 +236,7 @@ directory. They don't need `esp-matter` (no Matter, no BLE), so sourcing
 
 ### Experimental: Teyleten ESP32-S3 SuperMini build
 
-`s3/supermini_m4/` is a sibling of `m4-matter/` for the Teyleten board.
+`s3/supermini_m4/` is a sibling of `firmware/` for the Teyleten board.
 Same firmware behavior — only the GPIO numbers wired to peripherals differ
 (see § 2 Hardware "Pin map: XIAO vs Teyleten"). The supermini build sets
 `-DBRUSHLESSLAMP_BOARD_TEYLETEN=1` at project scope, which selects the
@@ -274,8 +273,8 @@ esp-matter-mfg-tool` to confirm).
 ### Generate credentials for N devices
 
 ```sh
-mkdir -p ~/esp/brushlesslamp-s3/m4-matter/mfg_out
-cd       ~/esp/brushlesslamp-s3/m4-matter/mfg_out
+mkdir -p ~/esp/brushlesslamp-s3/firmware/mfg_out
+cd       ~/esp/brushlesslamp-s3/firmware/mfg_out
 
 esp-matter-mfg-tool \
   -n 1 \
@@ -318,7 +317,7 @@ the raw passcode).
 ### Flash firmware + per-device partitions together
 
 ```sh
-B1=~/esp/brushlesslamp-s3/m4-matter/mfg_out/out/fff2_8001/<uuid>
+B1=~/esp/brushlesslamp-s3/firmware/mfg_out/out/fff2_8001/<uuid>
 
 idf.py -p <PORT> erase-flash        # wipe any prior state
 
@@ -329,7 +328,7 @@ python -m esptool --chip esp32s3 -p <PORT> -b 460800 \
   0xc000     build/partition_table/partition-table.bin \
   0xd000     $B1/*_esp_secure_cert.bin              \
   0x1d000    build/ota_data_initial.bin             \
-  0x20000    build/brushlesslamp_m4_matter.bin      \
+  0x20000    build/brushlesslamp.bin      \
   0x420000   $B1/*-partition.bin
 ```
 
@@ -380,8 +379,8 @@ Factory-reset paths (button hold ≥ 9 s, remote decommission) call
 
 | Problem | Symptom | Where it's fixed | Upstream |
 |---------|---------|------------------|----------|
-| `initArduino()` calls `esp_bt_controller_mem_release()` which frees the BT controller's own memory into the heap. | `Guru Meditation Error: LoadProhibited` inside `r_llm_env_init` during BLE bring-up. | Strong override of weak `btInUse()` in `s3/m4-matter/main/matter_app.cpp`. `__attribute__((used))` keeps it under LTO. | Same fix ESP Rainmaker uses on S3. |
-| `esp_secure_cert_mgr` 2.9.x removes `esp_secure_cert_get_priv_key()` that CHIP's `ESP32SecureCertDACProvider.cpp` still calls. | Compile error: "'esp_secure_cert_get_priv_key' was not declared in this scope". | Exact pin `"2.5.0"` in `s3/m4-matter/main/idf_component.yml`. | [connectedhomeip#31382](https://github.com/project-chip/connectedhomeip/issues/31382), [esp-matter#798](https://github.com/espressif/esp-matter/issues/798). |
+| `initArduino()` calls `esp_bt_controller_mem_release()` which frees the BT controller's own memory into the heap. | `Guru Meditation Error: LoadProhibited` inside `r_llm_env_init` during BLE bring-up. | Strong override of weak `btInUse()` in `s3/firmware/main/matter_app.cpp`. `__attribute__((used))` keeps it under LTO. | Same fix ESP Rainmaker uses on S3. |
+| `esp_secure_cert_mgr` 2.9.x removes `esp_secure_cert_get_priv_key()` that CHIP's `ESP32SecureCertDACProvider.cpp` still calls. | Compile error: "'esp_secure_cert_get_priv_key' was not declared in this scope". | Exact pin `"2.5.0"` in `s3/firmware/main/idf_component.yml`. | [connectedhomeip#31382](https://github.com/project-chip/connectedhomeip/issues/31382), [esp-matter#798](https://github.com/espressif/esp-matter/issues/798). |
 | Both `ESP_SECURE_CERT_DS_PERIPHERAL` and `ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS` gate the TLV API that CHIP's DAC provider needs. | Build picks one API visible and the other not, compile error on whichever is referenced. | Both flags explicitly off in `sdkconfig.defaults.esp32s3`. | — |
 | Default `CHIP_FACTORY_NAMESPACE_PARTITION_LABEL` is `"nvs"`, which is CHIP's KVS partition — not where our mfg_tool data lives. | `GetSetupDiscriminator() failed: 201` at boot, device keeps falling back to test defaults. | `CONFIG_CHIP_FACTORY_NAMESPACE_PARTITION_LABEL="fctry"` in the M4 sdkconfig. | — |
 | Running `esp-matter-mfg-tool` without `--dac-in-secure-cert` emits only the fctry `*-partition.bin` (no `*_esp_secure_cert.bin`). The firmware uses `CONFIG_SEC_CERT_DAC_PROVIDER=y` and looks for DAC + private key in the `esp_secure_cert` partition (0xD000), which stays blank. | Boot looks fine, BLE advertises, PASE handshake succeeds, then commissioning aborts at the first OpCreds DAC fetch: `dac_provider: esp_secure_cert_get_device_cert failed err:-1` → `OpCreds: Failed CertificateChainRequest: 3` → controller times out and shows "something went wrong". | Always invoke mfg-tool with `--dac-in-secure-cert` (already in § 6's reference command); confirm `mfg_out/out/<vid_pid>/<uuid>/<uuid>_esp_secure_cert.bin` exists; flash it at `0xD000` alongside the fctry binary at `0x420000`. | — |
@@ -393,21 +392,21 @@ Factory-reset paths (button hold ≥ 9 s, remote decommission) call
 | ESP-IDF default CPU frequency is 160 MHz; software ECDSA (PASE_Pake2, CSR keypair) at that clock takes ~800 ms / ~530 ms and blows past the Matter commissioner's per-step timeout (`CHIP_ERROR_TIMEOUT` 32). | Commissioning aborts after CSRRequest with `Long dispatch time: 530 ms` in the CHIP log and no fabric added. | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` + `CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y` in `sdkconfig.defaults.esp32s3` — runs at the S3's rated 240 MHz and cuts crypto latency by ~1/3. | — |
 | Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
 | `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
-| `CONFIG_ENABLE_CHIP_SHELL=y` (esp-matter default) starts a `console` task running `chip::Shell::Engine::Root().RunMainLoop()` → `linenoise()` → `usb_serial_jtag_read()`. With no USB host attached the read returns `-1` immediately on every call without yielding; the task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at 5 s. | Lamp boots, motor / knob / LEDs interactive for ~5 s, then chip resets in a loop. ISR heartbeat keeps blinking until the panic, so the device looks "wedged." Reset reason `0x06` (`ESP_RST_TASK_WDT`) once `CONFIG_ESP_TASK_WDT_PANIC=y` is also set. | `# CONFIG_ENABLE_CHIP_SHELL is not set` + `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/m4-matter/sdkconfig.defaults*`. Diagnostic story in § 7.1. | — (CHIP shell is dev-only; safe to disable on USB-Serial-JTAG-only boards.) |
+| `CONFIG_ENABLE_CHIP_SHELL=y` (esp-matter default) starts a `console` task running `chip::Shell::Engine::Root().RunMainLoop()` → `linenoise()` → `usb_serial_jtag_read()`. With no USB host attached the read returns `-1` immediately on every call without yielding; the task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at 5 s. | Lamp boots, motor / knob / LEDs interactive for ~5 s, then chip resets in a loop. ISR heartbeat keeps blinking until the panic, so the device looks "wedged." Reset reason `0x06` (`ESP_RST_TASK_WDT`) once `CONFIG_ESP_TASK_WDT_PANIC=y` is also set. | `# CONFIG_ENABLE_CHIP_SHELL is not set` + `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/firmware/sdkconfig.defaults*`. Diagnostic story in § 7.1. | — (CHIP shell is dev-only; safe to disable on USB-Serial-JTAG-only boards.) |
 | `motor_foc_task` deleted IDLE's task-WDT subscription on CORE_MOTOR *after* `initFOC()`. A long sensor-align sweep (stuck rotor, 24 V rail sag, encoder noise) on a fresh boot can take > 5 s, and the busy `motor_foc_task` (prio 20) prevents IDLE0 on core 1 from running. | TWDT panic on first boot only, reset reason `0x06`, before the "Ready." banner. Couldn't be reproduced on a free shaft. | `esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR))` hoisted to *before* the driver / motor init block in `s3/common/motor.cpp`. | — |
 | `s_motor.initFOC()` returning 0 (encoder fault, missed phase wire) didn't halt the FOC task — the busy loop ran on miscalibrated `zero_electric_angle` and drove Uq into the wrong electrical phase, repeatedly tripping DRV8313 OCP. | Motor whines or twitches randomly; no movement; `[motor] initFOC()=0` in the log. | After the log line, on `!foc_ok`: `vTaskDelete(nullptr)`; bridges stay grounded via the prior `s_motor.disable()`. `s3/common/motor.cpp`. | — |
-| `chip::DeviceLayer::PlatformMgr().ScheduleWork()` return ignored at the three `matter_push_*` sites. If the deferred-lambda queue is full (e.g., knob flood while Wi-Fi is stuck retransmitting), each failed schedule leaks the heap-allocated `OnOffPush`/`LevelPush` object. | Slow heap drift; eventual `LoadProhibited` after hours of stress (matches esp-matter#748). | Check `CHIP_ERROR` return; on non-OK, `delete p` and `ESP_LOGE`. `s3/m4-matter/main/matter_app.cpp`. | [esp-matter#748](https://github.com/espressif/esp-matter/issues/748). |
-| Default `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072` is tight under the operational mDNS + CASE burst right after commissioning. | Intermittent `LoadProhibited` in the lwIP/Matter mDNS path during the first ~30 s post-pairing. | `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096` in `s3/m4-matter/sdkconfig.defaults`. | — |
+| `chip::DeviceLayer::PlatformMgr().ScheduleWork()` return ignored at the three `matter_push_*` sites. If the deferred-lambda queue is full (e.g., knob flood while Wi-Fi is stuck retransmitting), each failed schedule leaks the heap-allocated `OnOffPush`/`LevelPush` object. | Slow heap drift; eventual `LoadProhibited` after hours of stress (matches esp-matter#748). | Check `CHIP_ERROR` return; on non-OK, `delete p` and `ESP_LOGE`. `s3/firmware/main/matter_app.cpp`. | [esp-matter#748](https://github.com/espressif/esp-matter/issues/748). |
+| Default `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072` is tight under the operational mDNS + CASE burst right after commissioning. | Intermittent `LoadProhibited` in the lwIP/Matter mDNS path during the first ~30 s post-pairing. | `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096` in `s3/firmware/sdkconfig.defaults`. | — |
 | SimpleFOC's `initFOC()` direction-detection sweep returns the wrong `sensor_direction` when the rotor can't move freely in both directions during the sweep (lead-screw pinned at the off-stop, hard mechanical limit). On a lamp homed at install, every subsequent boot has the rotor at off — so every boot mis-detects, inverting the control loop. | Lamp tries to move "up" but goes back into the stop; position loop stalls at user_angle=0 with `dir=+1` in the log (opposite of the verified `dir=-1`). | Cache `sensor_direction` in `foc_cal:dir` NVS after the first boot's free-position alignment; load before `initFOC()` so the direction sweep is skipped and only `zero_electric_angle` (which the wedged-rotor sweep handles correctly) is recomputed. `s3/common/motor.cpp` `load_sensor_direction()` / `save_sensor_direction()`. | — |
 | Boot-time motor homing into a hard stop in closed-loop voltage-mode FOC saturates Uq for the full stall-detection window (~1.2 s); the prolonged saturation corrupts the FOC commutation state, and no in-place re-init recovers (alignment can't sweep with rotor pinned). | After homing detects the stall, the motor can no longer develop torque in either direction; Uq saturates but `shaft_angle` doesn't move. | After stall, set `foc_cal:homed` and `esp_restart()`. Next boot starts with encoder=0, runs `initFOC` from scratch at the off-stop (with the cached `sensor_direction` so only the offset sweep runs), then proceeds to normal operation. `run_first_boot_homing()` + `esp_restart()` in `s3/common/motor.cpp`. | — |
-| External 5V (via Schottky on the XIAO VBUS castellation) sags 3V3 below the default `BROWNOUT_DET_LVL_SEL_3` (~2.98 V) during WiFi-assoc / BLE TX peaks. The S3 brownout reset is also misreported as a software reset (`ESP_RST_SW`) instead of `ESP_RST_BROWNOUT` ([IDF #17718](https://github.com/espressif/esp-idf/issues/17718)), masking it as a silent reboot mid-PASE. | Commissioning aborts on external power but works fine on USB; no "Brownout detector triggered" log. The next-boot reset_reason is `SW` or `WDT` rather than `BROWNOUT`. | Drop threshold to `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y` (~2.44 V) so brief sags ride out. Enable `MBEDTLS_HARDWARE_MPI` / `_AES` / `_SHA` so the PASE crypto window (where CPU + BLE peak together) is shorter, reducing exposure to rail sag. Hardware mitigation: 470 µF low-ESR cap on 3V3 at the module. `s3/m4-matter/sdkconfig.defaults`. | [IDF #17718](https://github.com/espressif/esp-idf/issues/17718) |
+| External 5V (via Schottky on the XIAO VBUS castellation) sags 3V3 below the default `BROWNOUT_DET_LVL_SEL_3` (~2.98 V) during WiFi-assoc / BLE TX peaks. The S3 brownout reset is also misreported as a software reset (`ESP_RST_SW`) instead of `ESP_RST_BROWNOUT` ([IDF #17718](https://github.com/espressif/esp-idf/issues/17718)), masking it as a silent reboot mid-PASE. | Commissioning aborts on external power but works fine on USB; no "Brownout detector triggered" log. The next-boot reset_reason is `SW` or `WDT` rather than `BROWNOUT`. | Drop threshold to `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y` (~2.44 V) so brief sags ride out. Enable `MBEDTLS_HARDWARE_MPI` / `_AES` / `_SHA` so the PASE crypto window (where CPU + BLE peak together) is shorter, reducing exposure to rail sag. Hardware mitigation: 470 µF low-ESR cap on 3V3 at the module. `s3/firmware/sdkconfig.defaults`. | [IDF #17718](https://github.com/espressif/esp-idf/issues/17718) |
 
 ---
 
 ## 7.1 Resolved: external 5 V boot now works (2026-04-28)
 
-> **Resolution:** `# CONFIG_ENABLE_CHIP_SHELL is not set` in `s3/m4-matter/sdkconfig.defaults`,
-> plus `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/m4-matter/sdkconfig.defaults.esp32s3`.
+> **Resolution:** `# CONFIG_ENABLE_CHIP_SHELL is not set` in `s3/firmware/sdkconfig.defaults`,
+> plus `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/firmware/sdkconfig.defaults.esp32s3`.
 > The chip wasn't wedged in an EN-pin partial-reset state — it was crash-rebooting
 > from a starved core-0 IDLE task on every host-less boot.
 
@@ -428,7 +427,7 @@ task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at
 
 ### Fix
 
-In `s3/m4-matter/sdkconfig.defaults`:
+In `s3/firmware/sdkconfig.defaults`:
 - `# CONFIG_ENABLE_CHIP_SHELL is not set`
 - `CONFIG_ESP_TASK_WDT_PANIC=y` (production safety; clean reboot if any task
   ever starves IDLE again).
@@ -450,7 +449,7 @@ pursued — unnecessary now.
 
 ## 7.2 Matter reliability sdkconfig set
 
-The full tuning block applied to `s3/m4-matter/sdkconfig.defaults` on top of the
+The full tuning block applied to `s3/firmware/sdkconfig.defaults` on top of the
 esp-matter Kconfig defaults. Each one is independently motivated in the workarounds
 table or in commit messages; together they're the verified-stable set.
 
@@ -508,7 +507,7 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_ENABLE_OTA_REQUESTOR=y
 ```
 
-When in doubt run `diff <(grep -E '^[^#]' ~/esp/brushlesslamp-s3/m4-matter/build/sdkconfig | sort) <(grep -E '^[^#]' s3/m4-matter/sdkconfig.defaults | sort)` to confirm none of these silently regressed.
+When in doubt run `diff <(grep -E '^[^#]' ~/esp/brushlesslamp-s3/firmware/build/sdkconfig | sort) <(grep -E '^[^#]' s3/firmware/sdkconfig.defaults | sort)` to confirm none of these silently regressed.
 
 ---
 
@@ -541,10 +540,10 @@ core the idle task would never run. The busy-wait is self-yielding via
 | `common/config.h`           | Every tunable: motor electrical, PID, position loop, LED fade curve, NVS key strings are in the stage-specific files. |
 | `common/pins.h`             | XIAO S3 D-label → GPIO map with strap annotations. |
 | `common/motor.h/.cpp`       | FOC task, position loop, manual-velocity mode, stall detection, NVS-cached `sensor_direction`. Used verbatim by every stage. |
-| `m4-matter/main/input.cpp`  | Knob quadrature decoder (ISR), button state machine (click/double-click/long-press ladder), NVS-persisted speed preset. |
-| `m4-matter/main/leds.cpp`   | 10 ms fader task, continuous angle → duty curve with gamma 2.2, pulse feedback task (symmetric N-blink around the current state), NVS-persisted `max_duty`. |
-| `m4-matter/main/matter_app.cpp` | Matter node / endpoint creation, `attribute_update_cb` inbound dispatch, `matter_push_level_from_angle` outbound (with OnOff=false at level 0 → the Home app can actually show "Off"), `btInUse` weak-override. |
-| `m4-matter/main/main.cpp`   | `app_main` — NVS init, arduino init, wire the settle callback, start everything in an order that keeps BLE init away from the busy-wait motor task. |
+| `firmware/main/input.cpp`  | Knob quadrature decoder (ISR), button state machine (click/double-click/long-press ladder), NVS-persisted speed preset. |
+| `firmware/main/leds.cpp`   | 10 ms fader task, continuous angle → duty curve with gamma 2.2, pulse feedback task (symmetric N-blink around the current state), NVS-persisted `max_duty`. |
+| `firmware/main/matter_app.cpp` | Matter node / endpoint creation, `attribute_update_cb` inbound dispatch, `matter_push_level_from_angle` outbound (with OnOff=false at level 0 → the Home app can actually show "Off"), `btInUse` weak-override. |
+| `firmware/main/main.cpp`   | `app_main` — NVS init, arduino init, wire the settle callback, start everything in an order that keeps BLE init away from the busy-wait motor task. |
 
 ### Control flow
 
@@ -641,7 +640,7 @@ sweep and stay quiet.
 
 **`CMake Error: Failed to resolve component 'button' / 'led_driver'`** —
 the esp-matter device_hal components need both in `EXTRA_COMPONENT_DIRS`
-even if our code doesn't call them. Check `s3/m4-matter/CMakeLists.txt`.
+even if our code doesn't call them. Check `s3/firmware/CMakeLists.txt`.
 
 ---
 
