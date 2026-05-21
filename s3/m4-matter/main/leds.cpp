@@ -13,14 +13,13 @@
 #include "config.h"
 #include "pins.h"
 
-// LED max duty persists across boots; debounced LED_NVS_DEBOUNCE ms after the last
-// knob nudge to spare flash.
+// LED max duty persists across boots; LED_NVS_DEBOUNCE ms after the last knob nudge to spare flash.
 static constexpr const char    *LED_NVS_NS       = "leds";
 static constexpr const char    *LED_NVS_KEY_DUTY = "maxduty";
-static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;  // ms
+static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;
 
 // Target state — written from input task / Matter callback on CORE_OTHERS.
-static volatile bool     s_on           = true;
+// On/off is implicit: motor_get_shaft_angle()<=0 → peak_for_angle returns 0 → lamp dark.
 static volatile uint16_t s_colortemp    = COLORTEMP_DEFAULT;
 static volatile uint8_t  s_max_duty     = LED_MAX_DUTY_DEFAULT;
 
@@ -69,9 +68,7 @@ void leds_init() {
     ledcWrite(PIN_LED_WW, 0);
     ledcWrite(PIN_LED_CW, 0);
 
-    // Restore persisted brightness from the last session. Floor at MIN so a
-    // bogus / accidentally-zeroed saved value can't leave the lamp permanently
-    // dark — one knob nudge will then bring it up to a visible level.
+    // Floor at MIN so an accidentally-zeroed saved value can't leave the lamp permanently dark.
     nvs_handle_t h;
     if (nvs_open(LED_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t saved = 0;
@@ -100,7 +97,6 @@ static void try_flush_duty_save(uint32_t now_ms) {
     s_last_saved_duty = v;
 }
 
-void leds_set_on(bool on)                    { s_on = on; }
 void leds_set_colortemp(uint16_t mireds)     { s_colortemp = mireds; }
 void leds_set_max_duty(uint8_t duty)         { s_max_duty = duty; }
 uint8_t leds_get_max_duty()                  { return s_max_duty; }
@@ -115,16 +111,10 @@ void leds_nudge_max_duty(int16_t delta) {
 static void leds_fader_task(void *) {
     while (true) {
         if (!s_pulse_active) {
-            // Target = (on ? peak_for_angle : 0) split by color temperature.
-            // peak_for_angle folds in both the linear ramp from zero and the gamma
-            // curve on max_duty; the 10 ms fader then glides current → target so
-            // discontinuous changes (knob bumps max_duty, Matter toggles off) feel
-            // smooth rather than stepped.
+            // Target = gamma(peak_for_angle) split by color temperature; fader glides current → target.
+            uint8_t peak = peak_for_angle(motor_get_shaft_angle(), s_max_duty);
             uint8_t tgt_ww = 0, tgt_cw = 0;
-            if (s_on) {
-                uint8_t peak = peak_for_angle(motor_get_shaft_angle(), s_max_duty);
-                ct_to_targets(s_colortemp, peak, &tgt_ww, &tgt_cw);
-            }
+            ct_to_targets(s_colortemp, peak, &tgt_ww, &tgt_cw);
 
             s_current_ww = step_toward(s_current_ww, tgt_ww);
             s_current_cw = step_toward(s_current_cw, tgt_cw);
@@ -141,18 +131,13 @@ void leds_start_fader() {
     xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 3072, nullptr, 2, nullptr, CORE_OTHERS);
 }
 
-// N cycles of 0 → peak → 0 (or current → 0 → current if lit), 160 ms ramp + 80 ms
-// dwell; ends at original state so the fader has nothing to re-ramp.
+// N cycles of two-state alternation centered on the current visual state; ends at the original state so the fader has nothing to re-ramp.
 static void leds_pulse_task(void *param) {
     uint8_t count = (uint8_t)(uintptr_t)param;
     uint8_t flash_ww = 0, flash_cw = 0;
     ct_to_targets(s_colortemp, gamma_correct(s_max_duty), &flash_ww, &flash_cw);
 
-    // Two-state alternation centered on the current visual state:
-    //   lamp-off  (a=0):     flash 0 → peak → 0 × count
-    //   lamp-lit  (a=cur):   blink cur → 0 → cur × count
-    // End state always matches the start state, so the fader has nothing to
-    // re-ramp and the user sees exactly `count` symmetric feedback blinks.
+    // Lamp dark → flash up to peak; lamp lit → blink down to 0. Symmetric so end == start.
     uint8_t a_ww = s_current_ww;
     uint8_t a_cw = s_current_cw;
     uint8_t b_ww, b_cw;

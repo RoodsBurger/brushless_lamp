@@ -9,7 +9,6 @@
 void leds_init();
 void leds_start_fader();
 
-void leds_set_on(bool on);
 void leds_set_colortemp(uint16_t mireds);
 void leds_set_max_duty(uint8_t duty);
 uint8_t leds_get_max_duty();

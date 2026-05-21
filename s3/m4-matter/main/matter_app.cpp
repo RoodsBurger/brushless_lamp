@@ -5,15 +5,15 @@
 #include <esp_err.h>
 #include <esp_log.h>
 #include <esp_matter.h>
+#include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <platform/CommissionableDataProvider.h>
 #include <platform/DeviceInstanceInfoProvider.h>
 
-#include <driver/gpio.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <nvs.h>
 
 #include "config.h"
@@ -36,8 +36,7 @@ static void wipe_local_nvs() {
 
 extern "C" void matter_wipe_local_nvs() { wipe_local_nvs(); }
 
-// Strong override of arduino-esp32's weak btInUse so initArduino doesn't release
-// the BT controller heap (which would crash Matter's BLE bring-up). __used survives LTO.
+// Override arduino-esp32's weak btInUse so initArduino doesn't release the BT controller heap before Matter brings up BLE. __used survives LTO.
 extern "C" __attribute__((used)) bool btInUse(void) { return true; }
 
 using namespace esp_matter;
@@ -91,25 +90,44 @@ static esp_err_t identification_cb(identification::callback_type_t type, uint16_
     return ESP_OK;
 }
 
+static void reopen_commissioning_window() {
+    auto &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
+    if (mgr.IsCommissioningWindowOpen()) return;
+    CHIP_ERROR err = mgr.OpenBasicCommissioningWindow(
+        chip::System::Clock::Seconds16(300),
+        chip::CommissioningWindowAdvertisement::kAllSupported);  // BLE + DNS-SD
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "reopen commissioning window failed: %" CHIP_ERROR_FORMAT, err.Format());
+    } else {
+        ESP_LOGI(TAG, "commissioning window re-opened (300 s, BLE+DNS-SD)");
+    }
+}
+
 static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
         ESP_LOGI(TAG, "commissioning complete"); break;
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
         ESP_LOGI(TAG, "IP address changed"); break;
-    case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
-        ESP_LOGI(TAG, "fabric removed");
+    case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
+        // PASE established but AddNOC/CASE didn't finish in time; reopen so the controller's
+        // retry has a fresh advertising window instead of timing out twice.
+        ESP_LOGW(TAG, "failsafe timer expired");
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            // Remote decommission ("Remove" from Home app) — CHIP wipes its own NVS only.
-            wipe_local_nvs();
-            auto &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
-            if (!mgr.IsCommissioningWindowOpen()) {
-                mgr.OpenBasicCommissioningWindow(chip::System::Clock::Seconds16(300),
-                                                 chip::CommissioningWindowAdvertisement::kDnssdOnly);
-            }
+            reopen_commissioning_window();
         }
         break;
-    }
+    case chip::DeviceLayer::DeviceEventType::kCHIPoBLEConnectionEstablished:
+        ESP_LOGI(TAG, "BLE conn established"); break;
+    case chip::DeviceLayer::DeviceEventType::kCHIPoBLEConnectionClosed:
+        ESP_LOGI(TAG, "BLE conn closed"); break;
+    case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
+        ESP_LOGI(TAG, "fabric removed");
+        if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+            wipe_local_nvs();
+            reopen_commissioning_window();
+        }
+        break;
     default: break;
     }
 }
@@ -117,7 +135,7 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
 void matter_app_init() {
     node::config_t node_config;
     node_t *node = node::create(&node_config, attribute_update_cb, identification_cb);
-    if (!node) { ESP_LOGE(TAG, "node::create failed"); return; }
+    if (!node) { ESP_LOGE(TAG, "node::create failed; restarting"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); }
 
     color_temperature_light::config_t lc;
     lc.on_off.on_off                         = false;
@@ -131,7 +149,7 @@ void matter_app_init() {
     lc.color_control_color_temperature.start_up_color_temperature_mireds = nullptr;
 
     endpoint_t *ep = color_temperature_light::create(node, &lc, ENDPOINT_FLAG_NONE, nullptr);
-    if (!ep) { ESP_LOGE(TAG, "endpoint create failed"); return; }
+    if (!ep) { ESP_LOGE(TAG, "endpoint create failed; restarting"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); }
     s_endpoint_id = endpoint::get_id(ep);
     ESP_LOGI(TAG, "ColorTemperatureLight endpoint=%u", s_endpoint_id);
 
@@ -142,12 +160,13 @@ void matter_app_init() {
                                  ColorControl::Attributes::ColorTemperatureMireds::Id)) attribute::set_deferred_persistence(a);
 
     esp_err_t err = esp_matter::start(event_cb);
-    if (err != ESP_OK) { ESP_LOGE(TAG, "esp_matter::start err=%d", err); return; }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_matter::start err=%d; restarting", err);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
 
-    // Direct printf (not ChipLogProgress): INFO chatter on chip[*] tags during
-    // PASE/AddNOC backpressures USB-CDC TX and times commissioning out. Use
-    // mfg_out/.../summary-*.csv's manualcode/qrcode columns — factory data only
-    // stores the Spake2+ verifier, so on-device code generation can't reproduce it.
+    // Use printf, not ChipLogProgress: chip[*] INFO chatter during PASE/AddNOC backpressures USB-CDC TX and times commissioning out.
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
         uint16_t vid = 0, pid = 0, discriminator = 0;
         if (auto *info = chip::DeviceLayer::GetDeviceInstanceInfoProvider()) {
@@ -199,6 +218,7 @@ struct LevelPush { uint16_t ep; uint8_t level; bool also_on; bool force_off; };
 }
 static void matter_push_level_work(intptr_t arg) {
     LevelPush *p = reinterpret_cast<LevelPush *>(arg);
+    // Must use the nullable variant — the non-nullable one is silently rejected with ESP_ERR_INVALID_ARG (258) because the cluster declares CurrentLevel nullable.
     esp_matter_attr_val_t v = esp_matter_nullable_uint8(p->level);
     esp_err_t r = attribute::update(p->ep, LevelControl::Id,
                                     LevelControl::Attributes::CurrentLevel::Id, &v);

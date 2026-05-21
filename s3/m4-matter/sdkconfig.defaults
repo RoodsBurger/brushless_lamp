@@ -33,11 +33,6 @@ CONFIG_LWIP_IPV6_NUM_ADDRESSES=8
 CONFIG_LWIP_IPV6_MEMP_NUM_ND6_QUEUE=5
 CONFIG_MBEDTLS_HKDF_C=y
 
-## Post-commission subscription headroom for a controller subscribing to
-## every attribute at once.
-CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=4
-CONFIG_MAX_CHIP_SUBSCRIPTIONS=4
-
 ## CHIP task priority 2 dispatches MRP retransmits promptly during
 ## commissioning while staying below LwIP (18) and WiFi (23). Stack headroom
 ## for a subscribe-all ReadHandler fan-out; long-dispatch threshold surfaces
@@ -81,11 +76,7 @@ CONFIG_BT_CTRL_PINNED_TO_CORE_0=y
 ## One dynamic endpoint (ColorTemperatureLight) is all we need for now.
 CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=2
 
-## CHIP_SHELL OFF: the shell's `console` task spins on `chip::Shell::Engine::
-## RunMainLoop` reading stdin via linenoise. With no USB host attached
-## `usb_serial_jtag_read()` returns -1 immediately, so the shell tight-loops
-## on a non-blocking read, never yields, starves the IDLE task on core 0,
-## and the Task WDT panics ~5 s later. Required off for external-power boot.
+## CHIP_SHELL OFF: shell console busy-loops on usb_serial_jtag_read() with no host attached, starves IDLE, TWDT panics ~5 s. Required off for external-power boot.
 # CONFIG_ENABLE_CHIP_SHELL is not set
 CONFIG_ENABLE_OTA_REQUESTOR=y
 CONFIG_ENABLE_WIFI_AP=n
@@ -108,15 +99,23 @@ CONFIG_ESP_WIFI_TX_BA_WIN=16
 ## Skip the ~1 s ARP probe after each Wi-Fi reconnect; Matter wants the IP back fast.
 CONFIG_LWIP_DHCP_DOES_ARP_CHECK=n
 
-## Headroom for multiple controllers (Apple + Google + HA) subscribing concurrently.
-CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=6
-CONFIG_MAX_CHIP_SUBSCRIPTIONS=6
-
 ## Light heap poisoning — names the offender on a free()/realloc() of a corrupted block.
 CONFIG_HEAP_POISONING_LIGHT=y
 
 ## mDNS metadata slots for Matter operational discovery + commissioner advertising.
 CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4
+
+## Brownout threshold to LVL_SEL_7 (~2.44 V) so brief 3V3 sags during WiFi assoc /
+## BLE peak TX bursts on external 5V (Schottky drop + thin VBUS impedance) don't
+## reset the chip. Default LVL_SEL_3 (~2.98 V) trips on every external-power burst.
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+
+## mbedTLS hardware accel — shortens the PASE / CSR crypto window during which
+## BLE + CPU are both peaked, reducing exposure to rail sag during commissioning.
+CONFIG_MBEDTLS_HARDWARE_MPI=y
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
 
 ## Cluster trim — keep only what ColorTemperatureLight uses (OnOff + LevelControl +
 ## ColorControl are on by default). Everything below saves flash.

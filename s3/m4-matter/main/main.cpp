@@ -15,34 +15,53 @@
 #include "motor.h"
 #include "pins.h"
 
+static const char *reset_reason_str(esp_reset_reason_t r) {
+    switch (r) {
+    case ESP_RST_POWERON:    return "POWERON";
+    case ESP_RST_EXT:        return "EXT";
+    case ESP_RST_SW:         return "SW";
+    case ESP_RST_PANIC:      return "PANIC";
+    case ESP_RST_INT_WDT:    return "INT_WDT";
+    case ESP_RST_TASK_WDT:   return "TASK_WDT";
+    case ESP_RST_WDT:        return "WDT";
+    case ESP_RST_DEEPSLEEP:  return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:   return "BROWNOUT";
+    case ESP_RST_SDIO:       return "SDIO";
+    default:                 return "UNKNOWN";
+    }
+}
+
 extern "C" void app_main() {
-    // nSLEEP has an external pullup on XIAO; park the DRV8313 asleep before the
-    // bootloader release lets it pull quiescent current.
+    // Park DRV8313 asleep before the bootloader release window so its 100 µA
+    // quiescent draw doesn't blip 3V3 during external-power brown-in.
     gpio_set_direction((gpio_num_t)PIN_NSP, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_NSP, 0);
 
-    // GPIO 21 (XIAO on-board user LED, active-LOW): drive HIGH so the LED stays off.
-    gpio_set_direction((gpio_num_t)21, GPIO_MODE_OUTPUT);
-    gpio_set_level((gpio_num_t)21, 1);
+#ifndef BRUSHLESSLAMP_BOARD_TEYLETEN
+    // XIAO on-board user LED is active-LOW on GPIO 21; drive HIGH = off.
+    gpio_set_direction((gpio_num_t)PIN_XIAO_USER_LED, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_XIAO_USER_LED, 1);
+#endif
 
-    // Keep BBPLL consumer count >= 1 against USB-Serial-JTAG SOF auto-removal on host-less boot.
+    // Hold a BBPLL consumer so USB-Serial-JTAG SOF auto-removal doesn't park the PLL on host-less boot.
     rtc_clk_bbpll_add_consumer();
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
     }
 
     initArduino();
     delay(500);
 
     printf("\n=== BrushlessLamp M4-matter (S3) ===\n");
+    printf("[boot] reset_reason=%s (%d)\n",
+           reset_reason_str(esp_reset_reason()), (int)esp_reset_reason());
 
     motor_set_settle_callback(matter_push_level_from_angle);
 
-    // Order matters: Matter (BLE / Wi-Fi / CHIP) must be up before the FOC busy-wait
-    // pegs core 1, otherwise CSRRequest times out with CHIP_ERROR_TIMEOUT (32).
+    // Matter (BLE/Wi-Fi/CHIP) must come up before the FOC busy-wait pegs core 1, or CSRRequest times out (CHIP_ERROR_TIMEOUT 32).
     leds_init();
     matter_app_init();
     leds_start_fader();

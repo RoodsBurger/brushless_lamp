@@ -6,7 +6,9 @@
 #include <freertos/task.h>
 #include <esp_log.h>
 #include <esp_matter.h>
+#include <esp_system.h>
 #include <nvs.h>
+#include <nvs_flash.h>
 
 #include "input.h"
 #include "motor.h"
@@ -31,8 +33,7 @@ static void input_load_speed_idx() {
     if (nvs_open(INPUT_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint8_t saved = 0;
     if (nvs_get_u8(h, INPUT_NVS_KEY_SPD, &saved) == ESP_OK) {
-        constexpr uint8_t N = sizeof(MOTION_VELOCITY_PRESETS) / sizeof(MOTION_VELOCITY_PRESETS[0]);
-        if (saved < N) s_speed_idx = saved;
+        if (saved < MOTION_VELOCITY_PRESET_COUNT) s_speed_idx = saved;
     }
     nvs_close(h);
 }
@@ -57,8 +58,7 @@ static void IRAM_ATTR onKnobEdge() {
 }
 
 static void on_single_click() {
-    // Google-Home-style on/off: off → motor target 0, on → last Matter level
-    // (matter_push_onoff's apply_state drives the motor from the current level).
+    // Google-Home-style on/off; matter_push_onoff fires apply_state which drives the motor.
     bool new_on = !matter_get_on_off();
     matter_push_onoff(new_on);
     ESP_LOGI(TAG, "onoff → %s", new_on ? "on" : "off");
@@ -72,8 +72,7 @@ static void on_double_click() {
 }
 
 static void on_triple_click() {
-    constexpr uint8_t N = sizeof(MOTION_VELOCITY_PRESETS) / sizeof(MOTION_VELOCITY_PRESETS[0]);
-    s_speed_idx = (uint8_t)((s_speed_idx + 1) % N);
+    s_speed_idx = (uint8_t)((s_speed_idx + 1) % MOTION_VELOCITY_PRESET_COUNT);
     float new_v = MOTION_VELOCITY_PRESETS[s_speed_idx];
     motor_set_motion_velocity(new_v);
     leds_pulse((uint8_t)(s_speed_idx + 1));
@@ -111,8 +110,7 @@ static BtnEvent poll_button() {
         } else {
             uint32_t held = now - press_start;
             if (held < BTN_CLICK_MAX_MS) {
-                // Accumulate click count; each new click restarts the window
-                // so N rapid taps in a row fire one CLICK_N event at the end.
+                // Each tap restarts the window; CLICK_N fires when the window closes with N pending.
                 click_count++;
                 last_click_ms = now;
             }
@@ -166,9 +164,14 @@ static void input_task(void *) {
         case BtnEvent::HOLD_WARNING:   leds_pulse(5);
                                        ESP_LOGW(TAG, "5 s hold — release to cancel, hold to 9 s for factory reset");
                                        break;
-        case BtnEvent::FACTORY_RESET:  ESP_LOGW(TAG, "FACTORY RESET");
-                                       matter_wipe_local_nvs();         // foc_cal / leds / input — not touched by esp_matter::factory_reset
-                                       esp_matter::factory_reset();     // wipes CHIP fabric + KVS, then esp_restart
+        case BtnEvent::FACTORY_RESET:  ESP_LOGW(TAG, "FACTORY RESET — wiping NVS + restarting");
+                                       // Nuclear wipe of the whole NVS partition. esp_matter::factory_reset()
+                                       // leaves residual deferred-persistence attribute values (the LevelControl
+                                       // CurrentLevel write that doesn't get cleared), which on the next-but-one
+                                       // boot fires apply_state() with a stale level and drives the motor
+                                       // unexpectedly. Matches the clean state produced by `esptool erase-region`.
+                                       nvs_flash_erase();
+                                       esp_restart();
                                        break;
         case BtnEvent::NONE:           break;
         }
@@ -185,8 +188,7 @@ void input_init() {
     attachInterrupt(digitalPinToInterrupt(PIN_ROT_A), onKnobEdge, CHANGE);
     attachInterrupt(digitalPinToInterrupt(PIN_ROT_B), onKnobEdge, CHANGE);
 
-    // Restore speed preset from NVS and apply to the motor BEFORE the FOC task
-    // starts picking up motion commands.
+    // Apply persisted speed preset before the FOC task picks up motion commands.
     input_load_speed_idx();
     motor_set_motion_velocity(MOTION_VELOCITY_PRESETS[s_speed_idx]);
 }

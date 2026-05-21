@@ -1,7 +1,4 @@
-// FOC + position loop on core 1. Encoder ISR is attached from inside the task so
-// noInterrupts() (per-core) blocks it. While idle-disabled we skip loopFOC()/move()
-// so setPwm(0,0,0) sticks; the encoder ISR keeps shaft_angle live for the next
-// target change.
+// FOC + position loop on core 1; encoder ISR attaches inside the task so noInterrupts() (per-core) blocks it. Idle-disable skips loopFOC()/move() so setPwm(0,0,0) holds.
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
@@ -18,14 +15,11 @@
 
 static const char *TAG = "motor";
 
-// Cache sensor_direction across boots; zero_electric_angle is recomputed because
-// MT6701 incremental quadrature resets to 0 on every boot.
+// NVS calibration: dir cached because initFOC's direction sweep is unreliable when
+// the rotor is pinned at the off-stop. homed flag skips the install-time homing on
+// subsequent boots. Both wiped by matter_wipe_local_nvs() on factory reset.
 static constexpr const char *NVS_NS            = "foc_cal";
 static constexpr const char *NVS_KEY_DIRECTION = "dir";
-// First-boot homing flag — set after the install-time homing has driven the lead
-// screw to its mechanical off-stop and the motor has been re-initialised at that
-// position. Wiped by matter_wipe_local_nvs() (long-press factory reset / remote
-// decommission) so the next boot re-runs the homing.
 static constexpr const char *NVS_KEY_HOMED     = "homed";
 
 // 200 µs busy-wait paces loopFOC at 5 kHz — quietest PID output on this motor; the
@@ -42,13 +36,7 @@ static volatile float  s_shaft_velocity_cached = 0.0f;
 static volatile bool   s_sync_pending          = false;
 static void          (*s_settle_cb)(float)     = nullptr;
 
-// Direct velocity mode (M1 audibility sweep, M2 knob velocity-nudge). When
-// s_manual_mode is true the position loop is bypassed and commanded_vel tracks
-// s_manual_vel through the MOTION_ACCEL ramp.
-static volatile float  s_manual_vel    = 0.0f;
-static volatile bool   s_manual_mode   = false;
-
-// Runtime cruise cap, cycled by double-click through MOTION_VELOCITY_PRESETS.
+// Runtime cruise cap, cycled by triple-click through MOTION_VELOCITY_PRESETS.
 static volatile float  s_motion_velocity = MOTION_VELOCITY;
 
 static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
@@ -98,10 +86,7 @@ static void save_homed_flag() {
     nvs_close(h);
 }
 
-// First-boot calibration: drive the lead screw down toward the off-stop in closed-
-// loop velocity until the stall detector trips. We don't try to recover the FOC
-// state in software — instead we set the homed flag in NVS and reboot. The next
-// boot starts fresh (encoder=0, motor re-aligned) with the rotor at the off-stop.
+// Drive lead screw against off-stop in closed-loop velocity until stall, then reboot to re-init FOC at the wedged rotor position.
 static void run_first_boot_homing() {
     constexpr float    HOMING_VELOCITY   = -10.0f;
     constexpr uint32_t HOMING_TIMEOUT_MS = 60000;
@@ -186,6 +171,10 @@ static void motor_foc_task(void *) {
     s_driver.pwm_frequency        = PWM_FREQ_HZ;
     int drv_ok = s_driver.init();
     ESP_LOGI(TAG, "driver.init()=%d", drv_ok);
+    if (!drv_ok) {
+        ESP_LOGE(TAG, "driver init failed; halting motor task");
+        vTaskDelete(nullptr);
+    }
     s_motor.linkDriver(&s_driver);
 
     s_motor.phase_resistance     = PHASE_RESISTANCE;
@@ -208,12 +197,12 @@ static void motor_foc_task(void *) {
 
     int mot_ok = s_motor.init();
     ESP_LOGI(TAG, "motor.init()=%d", mot_ok);
+    if (!mot_ok) {
+        ESP_LOGE(TAG, "motor init failed; halting motor task");
+        vTaskDelete(nullptr);
+    }
 
-    // Load sensor_direction from NVS (cached after first free-position alignment).
-    // With it set, initFOC's direction sweep is skipped and only zero_electric_angle
-    // is computed — that's the only sweep that works reliably when the rotor's
-    // pinned against the off-stop (which is the lead-screw's resting state across
-    // boots once homed).
+    // NVS-cached direction skips initFOC's direction sweep — only zero_electric_angle is computed, which is the only sweep that works with the rotor pinned at the off-stop.
     bool dir_cached = load_sensor_direction();
     ESP_LOGI(TAG, "sensor_direction loaded from NVS: %s (dir=%d)",
              dir_cached ? "yes" : "no", (int)s_motor.sensor_direction);
@@ -227,29 +216,27 @@ static void motor_foc_task(void *) {
         vTaskDelete(nullptr);
     }
 
-    // Save the freshly-detected direction once, on the boot where it was actually
-    // measured (cache miss); subsequent boots load it back instead of re-detecting.
     if (!dir_cached) {
         save_sensor_direction();
         ESP_LOGI(TAG, "sensor_direction saved to NVS");
     }
 
-    // First-boot install homing: drive the lead screw into its off-stop once, then
-    // re-init the encoder + motor + FOC exactly as a fresh boot would. NVS flag
-    // (foc_cal:homed) skips this on subsequent boots; matter_wipe_local_nvs() wipes
-    // the flag on factory reset, so the next boot will re-home.
+    // First-boot install homing; flag skips it on subsequent boots, factory reset re-arms.
     if (!load_homed_flag()) {
         run_first_boot_homing();
-        // Set the flag and reboot: a software re-init at the wedged off-stop can't
-        // recover the FOC commutation (alignment can't sweep with rotor pinned), so
-        // we hand off to a hard reset. The next boot starts with the encoder at 0,
-        // motor fully re-aligned at the off-stop position, and the homed flag set —
-        // it'll skip this block and go straight into normal operation.
         ESP_LOGI(TAG, "first-boot homing: saving flag and rebooting");
         save_homed_flag();
-        vTaskDelay(pdMS_TO_TICKS(200));   // give the log line time to drain
+        vTaskDelay(pdMS_TO_TICKS(200));   // drain the log line
         esp_restart();
     }
+
+    // Prime shaft_angle by running one loopFOC before the position loop reads it; otherwise
+    // pos_err is computed from the alignment-sweep's last sample (often a few rad off zero)
+    // and the loop drives the motor toward whatever stale value sat in shaft_angle.
+    s_motor.loopFOC();
+    s_target_angle           = s_motor.shaft_angle;
+    s_shaft_angle_cached     = s_motor.shaft_angle;
+    s_shaft_velocity_cached  = 0.0f;
 
     s_motor.disable();   // boot idle; first target change wakes the task
 
@@ -271,40 +258,6 @@ static void motor_foc_task(void *) {
         next_foc_us += FOC_PERIOD_US;
         if ((int32_t)(now_us - next_foc_us) > (int32_t)(2 * FOC_PERIOD_US)) {
             next_foc_us = now_us + FOC_PERIOD_US;
-        }
-
-        // Direct-velocity path (M1 sweep, M2 velocity-nudge).
-        if (s_manual_mode) {
-            float dt_m = (last_ramp_us == 0) ? 0.0f : (now_us - last_ramp_us) * 1e-6f;
-            last_ramp_us = now_us;
-            if (dt_m > 0.0f && dt_m < 0.1f) {
-                float step = MOTION_ACCEL * dt_m;
-                if      (commanded_vel <  s_manual_vel - step) commanded_vel += step;
-                else if (commanded_vel >  s_manual_vel + step) commanded_vel -= step;
-                else                                           commanded_vel  = s_manual_vel;
-            } else {
-                commanded_vel = s_manual_vel;
-            }
-
-            bool at_rest_m = fabsf(commanded_vel)         < VEL_AT_REST_EPS &&
-                             fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS;
-            if (!at_rest_m) last_active_ms = millis();
-            bool live = (millis() - last_active_ms) < IDLE_DISABLE_MS;
-
-            if (live) {
-                if (!s_motor.enabled) s_motor.enable();
-                s_motor.loopFOC();
-                s_motor.move(commanded_vel);
-            } else if (s_motor.enabled) {
-                s_motor.disable();
-                s_motor.PID_velocity.reset();
-                s_motor.shaft_velocity = 0.0f;
-                commanded_vel = 0.0f;
-            }
-
-            s_shaft_angle_cached    = s_motor.shaft_angle;
-            s_shaft_velocity_cached = s_motor.shaft_velocity;
-            continue;
         }
 
         // Position loop: physics-bounded trapezoidal descent toward target.
@@ -368,13 +321,20 @@ static void motor_foc_task(void *) {
         bool should_enable = (millis() - last_active_ms) < IDLE_DISABLE_MS;
 
         if (should_enable) {
-            if (!s_motor.enabled) s_motor.enable();
+            if (!s_motor.enabled) {
+                s_motor.enable();
+                // Reset ramp + stall trackers so stale state from before the disable window
+                // can't bias commanded_vel or false-trip the stall detector on re-engage.
+                commanded_vel     = 0.0f;
+                last_ramp_us      = 0;
+                motion_started_ms = 0;
+                stuck_since_ms    = 0;
+            }
             s_motor.loopFOC();
             s_motor.move(commanded_vel);
         } else if (s_motor.enabled) {
             s_motor.disable();
             s_motor.PID_velocity.reset();
-            s_motor.shaft_velocity = 0.0f;
             commanded_vel = 0.0f;
             if (s_sync_pending && s_settle_cb) {
                 s_settle_cb(s_motor.shaft_angle);
@@ -397,18 +357,6 @@ void motor_nudge_target_angle(float d_rad) { s_target_angle = clamp_angle(s_targ
 void motor_request_matter_sync_on_settle() { s_sync_pending = true; }
 void motor_set_settle_callback(void (*cb)(float)) { s_settle_cb = cb; }
 
-void motor_run_at_velocity(float rad_per_sec) {
-    if (rad_per_sec == 0.0f) {
-        // Hand control back to the position loop at the current shaft
-        // position so pos_err=0 and idle-disable fires cleanly next tick.
-        s_manual_mode  = false;
-        s_manual_vel   = 0.0f;
-        s_target_angle = s_shaft_angle_cached;
-    } else {
-        s_manual_vel  = rad_per_sec;
-        s_manual_mode = true;
-    }
-}
 
 float motor_get_target_angle()   { return s_target_angle; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }

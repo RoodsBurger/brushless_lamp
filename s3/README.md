@@ -362,6 +362,18 @@ fctry            0x420000 0x06000
    ColorTemperature all work. Decommission from the Home app → the device
    reopens a 300 s pairing window automatically.
 
+### First-boot lead-screw homing
+
+On the **first boot** after a factory reset / fresh flash, the motor task drives the
+lead screw down at -10 rad/s until the stall detector trips against the off-stop,
+then sets `foc_cal:homed` in NVS and `esp_restart()`s. The next boot starts with
+encoder=0 = off, runs `initFOC` from scratch at the off-stop position (using the
+cached `foc_cal:dir` to skip the direction sweep), and proceeds straight into normal
+operation. Subsequent boots skip homing entirely.
+
+Factory-reset paths (button hold ≥ 9 s, remote decommission) call
+`matter_wipe_local_nvs()` which clears `foc_cal`, so the next boot re-runs homing.
+
 ---
 
 ## 7. Workarounds
@@ -386,7 +398,9 @@ fctry            0x420000 0x06000
 | `s_motor.initFOC()` returning 0 (encoder fault, missed phase wire) didn't halt the FOC task — the busy loop ran on miscalibrated `zero_electric_angle` and drove Uq into the wrong electrical phase, repeatedly tripping DRV8313 OCP. | Motor whines or twitches randomly; no movement; `[motor] initFOC()=0` in the log. | After the log line, on `!foc_ok`: `vTaskDelete(nullptr)`; bridges stay grounded via the prior `s_motor.disable()`. `s3/common/motor.cpp`. | — |
 | `chip::DeviceLayer::PlatformMgr().ScheduleWork()` return ignored at the three `matter_push_*` sites. If the deferred-lambda queue is full (e.g., knob flood while Wi-Fi is stuck retransmitting), each failed schedule leaks the heap-allocated `OnOffPush`/`LevelPush` object. | Slow heap drift; eventual `LoadProhibited` after hours of stress (matches esp-matter#748). | Check `CHIP_ERROR` return; on non-OK, `delete p` and `ESP_LOGE`. `s3/m4-matter/main/matter_app.cpp`. | [esp-matter#748](https://github.com/espressif/esp-matter/issues/748). |
 | Default `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072` is tight under the operational mDNS + CASE burst right after commissioning. | Intermittent `LoadProhibited` in the lwIP/Matter mDNS path during the first ~30 s post-pairing. | `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096` in `s3/m4-matter/sdkconfig.defaults`. | — |
-| Default `CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=2` / `CONFIG_MAX_CHIP_SUBSCRIPTIONS=2` saturates when Apple Home + Google Home + Home Assistant all subscribe at once. | Stutter and "couldn't reach device" toasts in one ecosystem while another is active; eviction-and-renew loop. | Bumped to `6` / `6`. | — |
+| SimpleFOC's `initFOC()` direction-detection sweep returns the wrong `sensor_direction` when the rotor can't move freely in both directions during the sweep (lead-screw pinned at the off-stop, hard mechanical limit). On a lamp homed at install, every subsequent boot has the rotor at off — so every boot mis-detects, inverting the control loop. | Lamp tries to move "up" but goes back into the stop; position loop stalls at user_angle=0 with `dir=+1` in the log (opposite of the verified `dir=-1`). | Cache `sensor_direction` in `foc_cal:dir` NVS after the first boot's free-position alignment; load before `initFOC()` so the direction sweep is skipped and only `zero_electric_angle` (which the wedged-rotor sweep handles correctly) is recomputed. `s3/common/motor.cpp` `load_sensor_direction()` / `save_sensor_direction()`. | — |
+| Boot-time motor homing into a hard stop in closed-loop voltage-mode FOC saturates Uq for the full stall-detection window (~1.2 s); the prolonged saturation corrupts the FOC commutation state, and no in-place re-init recovers (alignment can't sweep with rotor pinned). | After homing detects the stall, the motor can no longer develop torque in either direction; Uq saturates but `shaft_angle` doesn't move. | After stall, set `foc_cal:homed` and `esp_restart()`. Next boot starts with encoder=0, runs `initFOC` from scratch at the off-stop (with the cached `sensor_direction` so only the offset sweep runs), then proceeds to normal operation. `run_first_boot_homing()` + `esp_restart()` in `s3/common/motor.cpp`. | — |
+| External 5V (via Schottky on the XIAO VBUS castellation) sags 3V3 below the default `BROWNOUT_DET_LVL_SEL_3` (~2.98 V) during WiFi-assoc / BLE TX peaks. The S3 brownout reset is also misreported as a software reset (`ESP_RST_SW`) instead of `ESP_RST_BROWNOUT` ([IDF #17718](https://github.com/espressif/esp-idf/issues/17718)), masking it as a silent reboot mid-PASE. | Commissioning aborts on external power but works fine on USB; no "Brownout detector triggered" log. The next-boot reset_reason is `SW` or `WDT` rather than `BROWNOUT`. | Drop threshold to `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y` (~2.44 V) so brief sags ride out. Enable `MBEDTLS_HARDWARE_MPI` / `_AES` / `_SHA` so the PASE crypto window (where CPU + BLE peak together) is shorter, reducing exposure to rail sag. Hardware mitigation: 470 µF low-ESR cap on 3V3 at the module. `s3/m4-matter/sdkconfig.defaults`. | [IDF #17718](https://github.com/espressif/esp-idf/issues/17718) |
 
 ---
 

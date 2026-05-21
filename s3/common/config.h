@@ -35,33 +35,25 @@ constexpr float SENSOR_MIN_ELAPSED_TIME = 0.0005f;  // encoder delta-t gate (s);
 // here feeds a physics-bounded brake curve into move():
 //     desired = min(MOTION_VELOCITY, sqrt(2 * MOTION_ACCEL * |pos_err|))
 // Accel / cruise / decel profile lands exactly at target with v=0.
-constexpr float    ANGLE_MAX          = 100.0f * 6.2831853f;  // 100 motor rotations
-constexpr float    MOTION_VELOCITY    = 15.0f;      // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
+constexpr float    ANGLE_MAX          = 100.0f * 6.2831853f;  // 100 motor rotations — shared by knob nudge and Matter level scale.
+constexpr float    MOTION_VELOCITY    = 15.0f;     // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
 constexpr float    MOTION_ACCEL       = 10.0f;      // rad/s² ramp + brake rate
 constexpr float    MOTION_EPS         = 0.5f;       // brake-on-reverse sign-change eps (rad/s)
 constexpr float    KNOB_STEP_RAD         = 6.2831853f;  // M3/M4 angle-mode: 1 motor rotation per detent
 constexpr float    KNOB_STEP_RAD_PER_SEC = 10.0f;       // M2 velocity-nudge: ±10 rad/s per detent
 constexpr float    KNOB_VEL_MAX_RAD_PER_SEC = 50.0f;    // M2 velocity-nudge clamp
 
-// Triple-click cycles MOTION_VELOCITY through these presets. Count is also the
-// LED-pulse feedback count (idx + 1 blinks) so index 0 = 1 blink = slowest.
-constexpr float   MOTION_VELOCITY_PRESETS[]     = { 15.0f, 25.0f, 40.0f };
+// Triple-click cycles MOTION_VELOCITY through these presets; index is also the LED-pulse blink count - 1.
+constexpr float   MOTION_VELOCITY_PRESETS[]      = { 15.0f, 25.0f, 40.0f };
+constexpr uint8_t MOTION_VELOCITY_PRESET_COUNT   = sizeof(MOTION_VELOCITY_PRESETS) / sizeof(MOTION_VELOCITY_PRESETS[0]);
 constexpr uint8_t MOTION_VELOCITY_PRESET_DEFAULT = 0;
 
-// Idle-disable: after IDLE_DISABLE_MS of commanded_vel + shaft_vel + pos_err
-// all below their eps, disable() + skip move() so setPwm(0,0,0) sticks. The
-// 0.3-rad pos eps is generous (≈17° of shaft slack) so the motor doesn't hold
-// torque indefinitely when parked near target.
+// 0.3-rad POS eps is ≈17° of shaft slack — wide so the motor doesn't hold torque indefinitely when parked near target.
 constexpr uint32_t IDLE_DISABLE_MS  = 250;
-constexpr float    VEL_AT_REST_EPS  = 0.2f;         // rad/s
-constexpr float    POS_AT_REST_EPS  = 0.3f;         // rad
+constexpr float    VEL_AT_REST_EPS  = 0.2f;
+constexpr float    POS_AT_REST_EPS  = 0.3f;
 
-// Stall detection: if the position loop is commanding |v| > STALL_VEL_EPS but
-// the shaft isn't following for STALL_TIMEOUT_MS past an initial WARMUP_MS
-// grace window, snap the internal target to the shaft (so pos_err=0 and the
-// motor idle-disables on the next tick) and fire the settle callback so
-// Matter sees the real position.
-constexpr float    STALL_VEL_EPS    = 0.2f;         // rad/s
+constexpr float    STALL_VEL_EPS    = 0.2f;
 constexpr uint32_t STALL_WARMUP_MS  = 800;
 constexpr uint32_t STALL_TIMEOUT_MS = 400;
 
@@ -70,11 +62,7 @@ constexpr uint32_t STALL_TIMEOUT_MS = 400;
 constexpr uint32_t LED_PWM_FREQ_HZ     = 25000;
 constexpr uint8_t  LED_PWM_RESOLUTION  = 8;
 
-// LED brightness is a continuous function of shaft_angle: 0 at the rest
-// position, linearly ramping to max over LED_FADE_ANGLE_RAD of travel, flat
-// beyond. Fader task additionally interpolates current→target at LED_FADE_STEP
-// per LED_FADE_PERIOD_MS to smooth discontinuous target changes (brightness
-// nudge, color-temp shifts, Matter on/off).
+// LED brightness ramps 0 → max linearly across the first LED_FADE_ANGLE_RAD of shaft travel; fader smooths discontinuous target changes.
 constexpr float    LED_FADE_ANGLE_RAD   = 1.0f;
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT = 200;      // 0..255 pre-gamma
 constexpr uint8_t  LED_MAX_DUTY_MIN     = 16;       // floor on knob + NVS load — below this gamma squashes to ~0 and the lamp reads as broken
@@ -91,19 +79,7 @@ constexpr uint16_t COLORTEMP_DEFAULT = 300;
 constexpr uint16_t COLORTEMP_MIN     = 100;
 constexpr uint16_t COLORTEMP_MAX     = 500;
 
-// Telemetry — periodic print cadence used by any stage still logging from the
-// FOC loop. Zero disables.
-constexpr uint32_t PRINT_INTERVAL_MS = 0;
-
-// Button semantics (each short tap resets the DOUBLE_CLICK window, so N clicks
-// fire as one CLICK_N event when the window closes):
-//   1 click : toggle Matter OnOff — off snaps motor to 0, on restores to last
-//             commanded level (Google-Home-style on/off)
-//   2 clicks: toggle knob mode (motor angle ↔ LED brightness); 2 LED blinks
-//   3 clicks: cycle speed presets; LEDs pulse (idx+1 blinks)
-//   hold ≥ LONG_PRESS_WARNING_MS : 5 warning blinks
-//   hold ≥ FACTORY_RESET_MS      : esp_matter::factory_reset() (M4) or
-//                                  nvs_flash_erase + restart (M3)
+// Button: 1 tap = Matter OnOff toggle | 2 taps = knob mode (angle/brightness) | 3 taps = speed preset | hold ≥9 s = factory reset.
 constexpr uint32_t BTN_DEBOUNCE_MS           = 30;
 constexpr uint32_t BTN_CLICK_MAX_MS          = 400;
 constexpr uint32_t BTN_DOUBLE_CLICK_MS       = 400;

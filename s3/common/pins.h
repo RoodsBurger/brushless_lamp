@@ -46,24 +46,18 @@ constexpr uint8_t PIN_PWM_A   = 12;    // DRV8313 IN2 — swapped with B to inve
 
 #else  // default: Seeed XIAO ESP32-S3
 
-// D-label → chip GPIO map for the XIAO breakout.
-//   D2 (GPIO 3) is a JTAG-select strap — knob ROT_A sits here; internal pull-up
-//     at boot keeps JTAG in its default mode. Safe.
-//   D6 (GPIO 43) is UART0 TX — the ROM bootloader prints for ~30 ms at boot,
-//     causing a brief flicker on LED_CW. Cosmetic.
-//   D7 (GPIO 44) is UART0 RX (input during ROM boot) — DRV8313 nSLEEP has an
-//     external pull-up that keeps the driver awake regardless.
-constexpr uint8_t PIN_ENC_A   = 1;     // D0 — MT6701 A
-constexpr uint8_t PIN_ENC_B   = 2;     // D1 — MT6701 B
-constexpr uint8_t PIN_ROT_A   = 3;     // D2 — knob quadrature A
-constexpr uint8_t PIN_ROT_B   = 4;     // D3 — knob quadrature B
-constexpr uint8_t PIN_BTN     = 5;     // D4 — knob push-button
-constexpr uint8_t PIN_LED_WW  = 43;    // D6 — warm-white LEDC (UART0 TX strap)
-constexpr uint8_t PIN_LED_CW  = 6;     // D5 — cool-white LEDC
-constexpr int     PIN_DRV_EN  = -1;    // sentinel: EN jumpered to 3V3 on the breakout
-constexpr uint8_t PIN_NSP     = 44;    // D7 — DRV8313 nSLEEP (UART0 RX strap, external pullup)
-constexpr uint8_t PIN_PWM_C   = 7;     // D8 — DRV8313 IN3
-constexpr uint8_t PIN_PWM_B   = 9;     // D10 — DRV8313 IN1 — swapped with A to invert rotor direction
-constexpr uint8_t PIN_PWM_A   = 8;     // D9 — DRV8313 IN2 — swapped with B to invert rotor direction
+constexpr uint8_t PIN_ENC_A         = 1;     // D0 — MT6701 A
+constexpr uint8_t PIN_ENC_B         = 2;     // D1 — MT6701 B
+constexpr uint8_t PIN_ROT_A         = 3;     // D2 — knob A (JTAG-select strap, INPUT_PULLUP safe)
+constexpr uint8_t PIN_ROT_B         = 4;     // D3 — knob B
+constexpr uint8_t PIN_BTN           = 5;     // D4 — knob push-button
+constexpr uint8_t PIN_LED_WW        = 43;    // D6 — warm-white LEDC (UART0 TX strap; ~30 ms flicker at boot)
+constexpr uint8_t PIN_LED_CW        = 6;     // D5 — cool-white LEDC
+constexpr int     PIN_DRV_EN        = -1;    // sentinel: EN jumpered to 3V3 on the breakout
+constexpr uint8_t PIN_NSP           = 44;    // D7 — DRV8313 nSLEEP (UART0 RX strap, external pullup)
+constexpr uint8_t PIN_PWM_C         = 7;     // D8 — DRV8313 IN3
+constexpr uint8_t PIN_PWM_B         = 9;     // D10 — DRV8313 IN1 (A/B swapped to invert rotor direction)
+constexpr uint8_t PIN_PWM_A         = 8;     // D9 — DRV8313 IN2 (A/B swapped to invert rotor direction)
+constexpr uint8_t PIN_XIAO_USER_LED = 21;    // XIAO on-board user LED (active-LOW)
 
 #endif
