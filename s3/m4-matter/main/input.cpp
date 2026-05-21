@@ -51,8 +51,9 @@ static void IRAM_ATTR onKnobEdge() {
     uint8_t now  = (a << 1) | b;
     uint8_t prev = s_knob_prev;
     s_knob_prev  = now;
-    if ((prev == 0b00 && now == 0b01) || (prev == 0b11 && now == 0b10)) s_knob_delta++;
-    if ((prev == 0b01 && now == 0b00) || (prev == 0b10 && now == 0b11)) s_knob_delta--;
+    // ++/-- swapped vs. canonical quadrature decode so the knob feels right with the inverted motor.
+    if ((prev == 0b00 && now == 0b01) || (prev == 0b11 && now == 0b10)) s_knob_delta--;
+    if ((prev == 0b01 && now == 0b00) || (prev == 0b10 && now == 0b11)) s_knob_delta++;
 }
 
 static void on_single_click() {

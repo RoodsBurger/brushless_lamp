@@ -8,7 +8,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
-#include <esp_task_wdt.h>
 #include <nvs.h>
 #include <math.h>
 
@@ -72,10 +71,6 @@ static void motor_foc_task(void *) {
         digitalWrite((uint8_t)PIN_DRV_EN, HIGH);
     }
     delay(2);
-
-    // Drop the per-core IDLE wdt before initFOC: the rotation sweep can run several
-    // seconds if the rotor sticks, and the busy-loop afterwards permanently starves IDLE.
-    esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR));
 
     s_driver.voltage_power_supply = SUPPLY_VOLTAGE;
     s_driver.voltage_limit        = VOLTAGE_LIMIT;

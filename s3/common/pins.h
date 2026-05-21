@@ -13,16 +13,16 @@
 //   PIN_ROT_A          3               3       (JTAG strap; internal pull-up = OK)
 //   PIN_ROT_B          4               4
 //   PIN_BTN            5               5
-//   PIN_LED_WW         6               6
-//   PIN_LED_CW        43               7       (off UART0 TX strap on Teyleten)
+//   PIN_LED_WW        43               7       (off UART0 TX strap on Teyleten)
+//   PIN_LED_CW         6               6
 //   PIN_DRV_EN        −1 (jumper)      8       (software-controlled on Teyleten)
 //   PIN_NSP           44              10       (off UART0 RX strap on Teyleten)
 //   PIN_PWM_C          7              11
-//   PIN_PWM_B          8              12
-//   PIN_PWM_A          9              13
+//   PIN_PWM_B          9              13     (A/B swapped vs DRV8313 IN1/IN2 to invert rotor direction)
+//   PIN_PWM_A          8              12     (A/B swapped vs DRV8313 IN1/IN2 to invert rotor direction)
 //
 // XIAO notes: GPIO 43/44 are UART0 TX/RX straps — bootloader briefly drives them
-// (~30 ms TX flicker on LED_CW) and DRV8313 nSLEEP has an external pull-up that
+// (~30 ms TX flicker on LED_WW) and DRV8313 nSLEEP has an external pull-up that
 // keeps the driver awake regardless. DRV8313 EN is jumpered to 3V3 on the
 // SimpleFOC Mini breakout (no software control).
 // Teyleten notes: more GPIOs broken out so we move off the strap pins and gain
@@ -36,13 +36,13 @@ constexpr uint8_t PIN_ENC_B   = 2;     // MT6701 B
 constexpr uint8_t PIN_ROT_A   = 3;     // knob quadrature A (JTAG-select strap, internal pull-up at boot is fine)
 constexpr uint8_t PIN_ROT_B   = 4;     // knob quadrature B
 constexpr uint8_t PIN_BTN     = 5;     // knob push-button (active-low, INPUT_PULLUP)
-constexpr uint8_t PIN_LED_WW  = 6;     // warm-white LEDC
-constexpr uint8_t PIN_LED_CW  = 7;     // cool-white LEDC
+constexpr uint8_t PIN_LED_WW  = 7;     // warm-white LEDC
+constexpr uint8_t PIN_LED_CW  = 6;     // cool-white LEDC
 constexpr int     PIN_DRV_EN  = 8;     // DRV8313 EN (HIGH = outputs enabled, LOW = tri-state)
 constexpr uint8_t PIN_NSP     = 10;    // DRV8313 nSLEEP
 constexpr uint8_t PIN_PWM_C   = 11;    // DRV8313 IN3
-constexpr uint8_t PIN_PWM_B   = 12;    // DRV8313 IN2
-constexpr uint8_t PIN_PWM_A   = 13;    // DRV8313 IN1
+constexpr uint8_t PIN_PWM_B   = 13;    // DRV8313 IN1 — swapped with A to invert rotor direction
+constexpr uint8_t PIN_PWM_A   = 12;    // DRV8313 IN2 — swapped with B to invert rotor direction
 
 #else  // default: Seeed XIAO ESP32-S3
 
@@ -58,12 +58,12 @@ constexpr uint8_t PIN_ENC_B   = 2;     // D1 — MT6701 B
 constexpr uint8_t PIN_ROT_A   = 3;     // D2 — knob quadrature A
 constexpr uint8_t PIN_ROT_B   = 4;     // D3 — knob quadrature B
 constexpr uint8_t PIN_BTN     = 5;     // D4 — knob push-button
-constexpr uint8_t PIN_LED_WW  = 6;     // D5 — warm-white LEDC
-constexpr uint8_t PIN_LED_CW  = 43;    // D6 — cool-white LEDC (UART0 TX strap)
+constexpr uint8_t PIN_LED_WW  = 43;    // D6 — warm-white LEDC (UART0 TX strap)
+constexpr uint8_t PIN_LED_CW  = 6;     // D5 — cool-white LEDC
 constexpr int     PIN_DRV_EN  = -1;    // sentinel: EN jumpered to 3V3 on the breakout
 constexpr uint8_t PIN_NSP     = 44;    // D7 — DRV8313 nSLEEP (UART0 RX strap, external pullup)
 constexpr uint8_t PIN_PWM_C   = 7;     // D8 — DRV8313 IN3
-constexpr uint8_t PIN_PWM_B   = 8;     // D9 — DRV8313 IN2
-constexpr uint8_t PIN_PWM_A   = 9;     // D10 — DRV8313 IN1
+constexpr uint8_t PIN_PWM_B   = 9;     // D10 — DRV8313 IN1 — swapped with A to invert rotor direction
+constexpr uint8_t PIN_PWM_A   = 8;     // D9 — DRV8313 IN2 — swapped with B to invert rotor direction
 
 #endif

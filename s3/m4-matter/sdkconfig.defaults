@@ -94,6 +94,11 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 ## Clean reboot if any task starves IDLE — prefer reset over freeze on regression.
 CONFIG_ESP_TASK_WDT_PANIC=y
 
+## Core 1 is dedicated to the FOC busy loop; IDLE there is expected to starve.
+## Disabling the IDLE-WDT check avoids ~1 kHz "task not found" log spam that
+## floods USB-CDC TX (and would tank commissioning per the CDC backpressure note).
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
 ## TCPIP task headroom for the mDNS + CASE burst right after commissioning.
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
 
