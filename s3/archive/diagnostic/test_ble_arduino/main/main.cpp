@@ -24,6 +24,9 @@
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+
+extern "C" void ble_store_config_init(void);
 
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -134,6 +137,27 @@ static void heartbeat_task(void *arg) {
     }
 }
 
+// Simulates m4-matter's motor.cpp FOC task: 5 kHz busy-wait on core 1, holding
+// the core saturated. m4-matter has this active during esp_matter::start; if
+// USB-host-enumeration masks some interference between this load and radio
+// init, this should reproduce the wedge here.
+#include "esp_timer.h"
+#include "esp_task_wdt.h"
+static void core1_busywait_task(void *arg) {
+    // Drop the IDLE watchdog on this core — same as motor.cpp does.
+    esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(1));
+
+    int64_t next = esp_timer_get_time();
+    volatile uint32_t scratch = 0;
+    while (1) {
+        while ((esp_timer_get_time() - next) < 0) {
+            scratch++;
+        }
+        next += 200;  // 5 kHz target
+        scratch = (uint32_t)(scratch * 17 + 31);
+    }
+}
+
 extern "C" void app_main(void) {
     gpio_set_direction((gpio_num_t)LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)LED_GPIO, 1);
@@ -157,6 +181,11 @@ extern "C" void app_main(void) {
 
     xTaskCreatePinnedToCore(heartbeat_task, "hb", 2048, NULL, 1, NULL, 0);
 
+    // Spin a 5 kHz busy-wait on core 1 to mirror m4-matter's FOC loop load.
+    xTaskCreatePinnedToCore(core1_busywait_task, "busy1", 4096, NULL,
+                            configMAX_PRIORITIES - 1, NULL, 1);
+    printf("[test_ble_arduino] core1 busywait started\n");
+
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
@@ -174,7 +203,17 @@ extern "C" void app_main(void) {
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sync_cb  = on_sync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+
+    // Match CHIP's SM/bonding setup (BLEManagerImpl::InitESPBleLayer L978-980).
+    ble_hs_cfg.sm_bonding        = 1;
+    ble_hs_cfg.sm_our_key_dist   = 0x01 | 0x02;  // ENC | ID
+    ble_hs_cfg.sm_their_key_dist = 0x01 | 0x02;
     beacon(3);
+
+    // Match CHIP's GATT init: services + GATT count cfg + store init.
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ble_store_config_init();
 
     int rc = ble_svc_gap_device_name_set("brushless-test-ble-arduino");
     if (rc != 0) ESP_LOGE(TAG, "name_set rc=%d", rc);
