@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <nvs.h>
 #include <math.h>
 
@@ -21,6 +22,11 @@ static const char *TAG = "motor";
 // MT6701 incremental quadrature resets to 0 on every boot.
 static constexpr const char *NVS_NS            = "foc_cal";
 static constexpr const char *NVS_KEY_DIRECTION = "dir";
+// First-boot homing flag — set after the install-time homing has driven the lead
+// screw to its mechanical off-stop and the motor has been re-initialised at that
+// position. Wiped by matter_wipe_local_nvs() (long-press factory reset / remote
+// decommission) so the next boot re-runs the homing.
+static constexpr const char *NVS_KEY_HOMED     = "homed";
 
 // 200 µs busy-wait paces loopFOC at 5 kHz — quietest PID output on this motor; the
 // S3 FPU would otherwise free-run at ~50 kHz and whine.
@@ -52,6 +58,109 @@ static float clamp_angle(float rad) {
     if (rad < 0.0f)      return 0.0f;
     if (rad > ANGLE_MAX) return ANGLE_MAX;
     return rad;
+}
+
+static bool load_sensor_direction() {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    int8_t v = 0;
+    esp_err_t err = nvs_get_i8(h, NVS_KEY_DIRECTION, &v);
+    nvs_close(h);
+    if (err != ESP_OK) return false;
+    s_motor.sensor_direction = (v > 0) ? Direction::CW : Direction::CCW;
+    return true;
+}
+
+static void save_sensor_direction() {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    int8_t v = (s_motor.sensor_direction == Direction::CW) ? 1 : -1;
+    nvs_set_i8(h, NVS_KEY_DIRECTION, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static bool load_homed_flag() {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    uint8_t v = 0;
+    esp_err_t err = nvs_get_u8(h, NVS_KEY_HOMED, &v);
+    nvs_close(h);
+    return (err == ESP_OK && v == 1);
+}
+
+static void save_homed_flag() {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    uint8_t v = 1;
+    nvs_set_u8(h, NVS_KEY_HOMED, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// First-boot calibration: drive the lead screw down toward the off-stop in closed-
+// loop velocity until the stall detector trips. We don't try to recover the FOC
+// state in software — instead we set the homed flag in NVS and reboot. The next
+// boot starts fresh (encoder=0, motor re-aligned) with the rotor at the off-stop.
+static void run_first_boot_homing() {
+    constexpr float    HOMING_VELOCITY   = -10.0f;
+    constexpr uint32_t HOMING_TIMEOUT_MS = 60000;
+
+    ESP_LOGI(TAG, "first-boot homing: driving lead screw toward off-stop");
+    s_motor.enable();
+
+    uint32_t start_ms          = millis();
+    uint32_t motion_started_ms = 0;
+    uint32_t stuck_since_ms    = 0;
+    uint32_t next_foc_us       = micros();
+    uint32_t last_ramp_us      = micros();
+    float    commanded_vel     = 0.0f;
+
+    while ((millis() - start_ms) < HOMING_TIMEOUT_MS) {
+        uint32_t now_us = micros();
+        while ((int32_t)(now_us - next_foc_us) < 0) now_us = micros();
+        next_foc_us += FOC_PERIOD_US;
+        if ((int32_t)(now_us - next_foc_us) > (int32_t)(2 * FOC_PERIOD_US)) {
+            next_foc_us = now_us + FOC_PERIOD_US;
+        }
+
+        float dt = (now_us - last_ramp_us) * 1e-6f;
+        last_ramp_us = now_us;
+        if (dt > 0.0f && dt < 0.1f) {
+            float step = MOTION_ACCEL * dt;
+            if      (commanded_vel >  HOMING_VELOCITY + step) commanded_vel -= step;
+            else if (commanded_vel <  HOMING_VELOCITY - step) commanded_vel += step;
+            else                                              commanded_vel  = HOMING_VELOCITY;
+        }
+
+        s_motor.loopFOC();
+        s_motor.move(commanded_vel);
+
+        bool ramp_done = fabsf(commanded_vel - HOMING_VELOCITY) < 0.1f;
+        if (!ramp_done) {
+            motion_started_ms = 0;
+            stuck_since_ms = 0;
+            continue;
+        }
+
+        uint32_t now_ms = millis();
+        if (motion_started_ms == 0) motion_started_ms = now_ms;
+        bool past_warmup  = (now_ms - motion_started_ms) > STALL_WARMUP_MS;
+        bool shaft_frozen = fabsf(s_motor.shaft_velocity) < STALL_VEL_EPS;
+
+        if (past_warmup && shaft_frozen) {
+            if (stuck_since_ms == 0) stuck_since_ms = now_ms;
+            else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
+                ESP_LOGI(TAG, "first-boot homing: stalled at off-stop (shaft_angle=%.3f)",
+                         s_motor.shaft_angle);
+                break;
+            }
+        } else {
+            stuck_since_ms = 0;
+        }
+    }
+
+    s_motor.disable();
 }
 
 static void motor_foc_task(void *) {
@@ -100,6 +209,15 @@ static void motor_foc_task(void *) {
     int mot_ok = s_motor.init();
     ESP_LOGI(TAG, "motor.init()=%d", mot_ok);
 
+    // Load sensor_direction from NVS (cached after first free-position alignment).
+    // With it set, initFOC's direction sweep is skipped and only zero_electric_angle
+    // is computed — that's the only sweep that works reliably when the rotor's
+    // pinned against the off-stop (which is the lead-screw's resting state across
+    // boots once homed).
+    bool dir_cached = load_sensor_direction();
+    ESP_LOGI(TAG, "sensor_direction loaded from NVS: %s (dir=%d)",
+             dir_cached ? "yes" : "no", (int)s_motor.sensor_direction);
+
     int foc_ok = s_motor.initFOC();
     ESP_LOGI(TAG, "initFOC()=%d zero_elec=%.4f dir=%d",
              foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
@@ -107,6 +225,30 @@ static void motor_foc_task(void *) {
         ESP_LOGE(TAG, "FOC init failed; halting motor task — check encoder + driver wiring");
         s_motor.disable();
         vTaskDelete(nullptr);
+    }
+
+    // Save the freshly-detected direction once, on the boot where it was actually
+    // measured (cache miss); subsequent boots load it back instead of re-detecting.
+    if (!dir_cached) {
+        save_sensor_direction();
+        ESP_LOGI(TAG, "sensor_direction saved to NVS");
+    }
+
+    // First-boot install homing: drive the lead screw into its off-stop once, then
+    // re-init the encoder + motor + FOC exactly as a fresh boot would. NVS flag
+    // (foc_cal:homed) skips this on subsequent boots; matter_wipe_local_nvs() wipes
+    // the flag on factory reset, so the next boot will re-home.
+    if (!load_homed_flag()) {
+        run_first_boot_homing();
+        // Set the flag and reboot: a software re-init at the wedged off-stop can't
+        // recover the FOC commutation (alignment can't sweep with rotor pinned), so
+        // we hand off to a hard reset. The next boot starts with the encoder at 0,
+        // motor fully re-aligned at the off-stop position, and the homed flag set —
+        // it'll skip this block and go straight into normal operation.
+        ESP_LOGI(TAG, "first-boot homing: saving flag and rebooting");
+        save_homed_flag();
+        vTaskDelay(pdMS_TO_TICKS(200));   // give the log line time to drain
+        esp_restart();
     }
 
     s_motor.disable();   // boot idle; first target change wakes the task
