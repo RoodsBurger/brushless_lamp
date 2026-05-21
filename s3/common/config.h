@@ -53,9 +53,9 @@ constexpr uint32_t IDLE_DISABLE_MS  = 250;
 constexpr float    VEL_AT_REST_EPS  = 0.2f;
 constexpr float    POS_AT_REST_EPS  = 0.3f;
 
-constexpr float    STALL_VEL_EPS    = 0.2f;
-constexpr uint32_t STALL_WARMUP_MS  = 800;
-constexpr uint32_t STALL_TIMEOUT_MS = 400;
+constexpr float    STALL_VEL_EPS    = 0.5f;   // shaft slowing past this is "frozen"
+constexpr uint32_t STALL_WARMUP_MS  = 400;   // grace after engage so the trapezoidal ramp doesn't false-trip
+constexpr uint32_t STALL_TIMEOUT_MS = 150;   // sustained-frozen window before stall fires
 
 // LED driver (LEDC). 25 kHz keeps PWM well above the audible band; 8-bit duty
 // gives 256 levels which is plenty once the gamma curve is applied.

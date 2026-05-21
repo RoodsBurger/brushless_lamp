@@ -16,11 +16,16 @@
 static const char *TAG = "motor";
 
 // NVS calibration: dir cached because initFOC's direction sweep is unreliable when
-// the rotor is pinned at the off-stop. homed flag skips the install-time homing on
-// subsequent boots. Both wiped by matter_wipe_local_nvs() on factory reset.
+// the rotor is pinned at the off-stop. homed flag skips install-time homing on
+// subsequent boots. pos persists user-coord position across plug/unplug — the
+// lead screw holds the rotor mechanically, but the incremental encoder resets to
+// 0 on power-on, so we restore the offset that makes user_angle match. All wiped
+// by matter_wipe_local_nvs() on factory reset.
 static constexpr const char *NVS_NS            = "foc_cal";
 static constexpr const char *NVS_KEY_DIRECTION = "dir";
 static constexpr const char *NVS_KEY_HOMED     = "homed";
+static constexpr const char *NVS_KEY_POSITION  = "pos";
+static constexpr float       POS_SAVE_EPS_RAD  = 0.1f;   // skip save if move was <0.1 rad — spares flash
 
 // 200 µs busy-wait paces loopFOC at 5 kHz — quietest PID output on this motor; the
 // S3 FPU would otherwise free-run at ~50 kHz and whine.
@@ -35,6 +40,10 @@ static volatile float  s_shaft_angle_cached    = 0.0f;
 static volatile float  s_shaft_velocity_cached = 0.0f;
 static volatile bool   s_sync_pending          = false;
 static void          (*s_settle_cb)(float)     = nullptr;
+// Encoder reading that maps to user_angle=0; loaded from NVS at boot so the lead screw's
+// physical position carries across plug/unplug (incremental encoder otherwise resets to 0).
+static float           s_home_offset           = 0.0f;
+static float           s_last_saved_position   = NAN;
 
 // Runtime cruise cap, cycled by triple-click through MOTION_VELOCITY_PRESETS.
 static volatile float  s_motion_velocity = MOTION_VELOCITY;
@@ -77,6 +86,27 @@ static bool load_homed_flag() {
     return (err == ESP_OK && v == 1);
 }
 
+static bool load_position(float *out) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t sz = sizeof(float);
+    float v = 0.0f;
+    esp_err_t err = nvs_get_blob(h, NVS_KEY_POSITION, &v, &sz);
+    nvs_close(h);
+    if (err != ESP_OK || sz != sizeof(float)) return false;
+    *out = v;
+    return true;
+}
+
+static void save_position(float v) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, NVS_KEY_POSITION, &v, sizeof(float));
+    nvs_commit(h);
+    nvs_close(h);
+    s_last_saved_position = v;
+}
+
 static void save_homed_flag() {
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
@@ -88,10 +118,13 @@ static void save_homed_flag() {
 
 // Drive lead screw against off-stop in closed-loop velocity until stall, then reboot to re-init FOC at the wedged rotor position.
 static void run_first_boot_homing() {
-    constexpr float    HOMING_VELOCITY   = -10.0f;
-    constexpr uint32_t HOMING_TIMEOUT_MS = 60000;
+    constexpr float    HOMING_VELOCITY   = -3.0f;   // slow approach so stall fires before the rotor wedges hard
+    constexpr uint32_t HOMING_TIMEOUT_MS = 120000;  // worst-case travel at -3 rad/s ≈ 360 rad
+    constexpr float    HOMING_VOLTAGE    = 1.0f;    // very low Uq cap — soft impact at the off-stop
 
     ESP_LOGI(TAG, "first-boot homing: driving lead screw toward off-stop");
+    float saved_vlimit = s_motor.voltage_limit;
+    s_motor.voltage_limit = HOMING_VOLTAGE;
     s_motor.enable();
 
     uint32_t start_ms          = millis();
@@ -146,6 +179,7 @@ static void run_first_boot_homing() {
     }
 
     s_motor.disable();
+    s_motor.voltage_limit = saved_vlimit;   // restore runtime torque headroom
 }
 
 static void motor_foc_task(void *) {
@@ -234,8 +268,22 @@ static void motor_foc_task(void *) {
     // pos_err is computed from the alignment-sweep's last sample (often a few rad off zero)
     // and the loop drives the motor toward whatever stale value sat in shaft_angle.
     s_motor.loopFOC();
-    s_target_angle           = s_motor.shaft_angle;
-    s_shaft_angle_cached     = s_motor.shaft_angle;
+
+    // Restore last-known position from NVS. Lead screw holds the rotor mechanically across
+    // plug/unplug; encoder reads 0 on fresh boot, so map current shaft_angle to the saved
+    // user_angle by setting home_offset = shaft_angle - saved_user_angle.
+    float saved_pos = 0.0f;
+    if (load_position(&saved_pos)) {
+        s_home_offset = s_motor.shaft_angle - saved_pos;
+        s_target_angle = saved_pos;        // hold position until Matter / knob commands a new one
+        s_sync_pending = true;              // push current state to Matter on first idle-disable
+        ESP_LOGI(TAG, "restored position: user_angle=%.3f (home_offset=%.3f)", saved_pos, s_home_offset);
+    } else {
+        s_home_offset = s_motor.shaft_angle;
+        s_target_angle = 0.0f;
+        ESP_LOGI(TAG, "no saved position; home_offset=%.3f", s_home_offset);
+    }
+    s_shaft_angle_cached     = s_motor.shaft_angle - s_home_offset;
     s_shaft_velocity_cached  = 0.0f;
 
     s_motor.disable();   // boot idle; first target change wakes the task
@@ -244,8 +292,6 @@ static void motor_foc_task(void *) {
     uint32_t last_ramp_us      = 0;
     uint32_t last_active_ms    = 0;
     uint32_t next_foc_us       = micros();
-    uint32_t motion_started_ms = 0;     // stall: 0 = not trying to move
-    uint32_t stuck_since_ms    = 0;     // stall: 0 = shaft isn't frozen in this attempt
 
     while (true) {
         // Busy-wait to the next 200 µs boundary; if we fell behind by more
@@ -261,7 +307,9 @@ static void motor_foc_task(void *) {
         }
 
         // Position loop: physics-bounded trapezoidal descent toward target.
-        float pos_err     = s_target_angle - s_motor.shaft_angle;
+        // user_angle = shaft_angle - home_offset so plug/unplug restores the same logical position.
+        float user_angle  = s_motor.shaft_angle - s_home_offset;
+        float pos_err     = s_target_angle - user_angle;
         float brake_v     = sqrtf(2.0f * MOTION_ACCEL * fabsf(pos_err));
         float desired_mag = fminf(s_motion_velocity, brake_v);
         float desired_raw = (pos_err >= 0.0f) ? desired_mag : -desired_mag;
@@ -286,32 +334,6 @@ static void motor_foc_task(void *) {
             commanded_vel = desired_vel;
         }
 
-        // Stall: if commanded |v| > eps but shaft frozen past WARMUP+TIMEOUT, snap target
-        // to shaft so pos_err→0 and idle-disable fires; report new resting angle to Matter.
-        bool trying_to_move = fabsf(commanded_vel) > STALL_VEL_EPS;
-        if (trying_to_move) {
-            uint32_t now_ms = millis();
-            if (motion_started_ms == 0) motion_started_ms = now_ms;
-            bool past_warmup  = (now_ms - motion_started_ms) > STALL_WARMUP_MS;
-            bool shaft_frozen = fabsf(s_motor.shaft_velocity) < STALL_VEL_EPS;
-            if (past_warmup && shaft_frozen) {
-                if (stuck_since_ms == 0) stuck_since_ms = now_ms;
-                else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
-                    ESP_LOGW(TAG, "STALL at %.2f rad", s_motor.shaft_angle);
-                    commanded_vel     = 0.0f;
-                    s_target_angle    = s_motor.shaft_angle;
-                    if (s_settle_cb) s_settle_cb(clamp_angle(s_motor.shaft_angle));
-                    motion_started_ms = 0;
-                    stuck_since_ms    = 0;
-                }
-            } else {
-                stuck_since_ms = 0;
-            }
-        } else {
-            motion_started_ms = 0;
-            stuck_since_ms    = 0;
-        }
-
         // Idle-disable when commanded, shaft, and pos_err all rest below their eps; entry
         // fires the settle callback so Matter learns knob-driven moves.
         bool at_rest = fabsf(commanded_vel)          < VEL_AT_REST_EPS &&
@@ -329,13 +351,17 @@ static void motor_foc_task(void *) {
             s_motor.PID_velocity.reset();
             s_motor.shaft_velocity = 0.0f;
             commanded_vel = 0.0f;
+            // Persist resting position to NVS (debounced) so plug/unplug restores it.
+            if (isnan(s_last_saved_position) || fabsf(user_angle - s_last_saved_position) > POS_SAVE_EPS_RAD) {
+                save_position(user_angle);
+            }
             if (s_sync_pending && s_settle_cb) {
-                s_settle_cb(s_motor.shaft_angle);
+                s_settle_cb(user_angle);
                 s_sync_pending = false;
             }
         }
 
-        s_shaft_angle_cached    = s_motor.shaft_angle;
+        s_shaft_angle_cached    = user_angle;
         s_shaft_velocity_cached = s_motor.shaft_velocity;
     }
 }

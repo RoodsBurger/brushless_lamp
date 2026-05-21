@@ -60,9 +60,10 @@ CONFIG_BT_NIMBLE_MEM_OPTIMIZATION=y
 ## instead of fragmenting into ~6 L2CAP PDUs.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517
 CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y
-CONFIG_BT_NIMBLE_ACL_BUF_COUNT=10
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=12
 CONFIG_BT_NIMBLE_ACL_BUF_SIZE=255
-CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=6144
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
 
 ## Device-side failsafe ceiling above the worst-case software ECDSA time
 ## so a slow CSR never trips our own guard.
@@ -99,8 +100,8 @@ CONFIG_ESP_WIFI_TX_BA_WIN=16
 ## Skip the ~1 s ARP probe after each Wi-Fi reconnect; Matter wants the IP back fast.
 CONFIG_LWIP_DHCP_DOES_ARP_CHECK=n
 
-## Light heap poisoning — names the offender on a free()/realloc() of a corrupted block.
-CONFIG_HEAP_POISONING_LIGHT=y
+## Heap poisoning OFF: ~15 % allocation overhead is a real cost during PASE (lots of small allocs); revert to LIGHT only for heap-corruption debugging.
+# CONFIG_HEAP_POISONING_LIGHT is not set
 
 ## mDNS metadata slots for Matter operational discovery + commissioner advertising.
 CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4
@@ -217,3 +218,18 @@ CONFIG_SUPPORT_UNIT_LOCALIZATION_CLUSTER=n
 CONFIG_SUPPORT_COMMODITY_METERING_CLUSTER=n
 CONFIG_SUPPORT_COMMODITY_TARIFF_CLUSTER=n
 CONFIG_SUPPORT_PUSH_AV_STREAM_TRANSPORT_CLUSTER=n
+
+## Pin fast BLE adv to 20 ms (32 × 0.625 ms) min/max — Apple/Google both prefer this
+## window. NimBLE often lands at the upper bound under load, missing the controller's
+## first scan; equal min/max forces tight scheduling.
+CONFIG_BLE_FAST_ADVERTISING_INTERVAL_MIN=32
+CONFIG_BLE_FAST_ADVERTISING_INTERVAL_MAX=32
+
+## Extended commissionable discovery — keep mDNS commissionable records published
+## for 48 h after the fast-adv window expires, so a controller can still find a
+## half-commissioned device on retry instead of giving up at the 15 min default.
+CONFIG_ENABLE_EXTENDED_DISCOVERY=y
+
+## WiFi + BT coex on the S3's single 2.4 GHz radio: PHY-coded TX/RX time limit
+## prevents long BLE bursts from starving WiFi (and vice versa) during PASE.
+CONFIG_BT_CTRL_COEX_PHY_CODED_TX_RX_TLIM_EN=y

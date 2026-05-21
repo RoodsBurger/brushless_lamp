@@ -110,11 +110,13 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
         ESP_LOGI(TAG, "IP address changed"); break;
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
-        // PASE established but AddNOC/CASE didn't finish in time; reopen so the controller's
-        // retry has a fresh advertising window instead of timing out twice.
-        ESP_LOGW(TAG, "failsafe timer expired");
+        // NimBLE state machine often wedges after a partial commission (ble_gap_adv_set_data
+        // returns 0x5B0001E); an in-place reopen leaves the wedge. Reboot clears it and
+        // CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART re-arms commissioning on the next boot.
+        ESP_LOGW(TAG, "failsafe timer expired — rebooting to clear BLE state");
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            reopen_commissioning_window();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
         }
         break;
     case chip::DeviceLayer::DeviceEventType::kCHIPoBLEConnectionEstablished:
