@@ -142,13 +142,19 @@ void matter_app_init() {
     color_temperature_light::config_t lc;
     lc.on_off.on_off                         = false;
     lc.on_off_lighting.start_up_on_off       = nullptr;
-    // MinLevel; freshly paired device starts at the bottom of travel.
-    lc.level_control.current_level           = 1;
-    // null => off→on resumes last persisted level (avoids the "always 50% on turn-on" default).
-    lc.level_control_lighting.start_up_current_level = nullptr;
+    lc.level_control.current_level           = 1;     // Matter MinLevel
+    lc.level_control_lighting.start_up_current_level = nullptr;   // resume last persisted on power-up
     lc.color_control.color_mode              = (uint8_t)ColorControl::ColorMode::kColorTemperature;
     lc.color_control.enhanced_color_mode     = (uint8_t)ColorControl::ColorMode::kColorTemperature;
-    lc.color_control_color_temperature.start_up_color_temperature_mireds = nullptr;
+    // ColorCapabilities bit 4 = "ColorTemperature supported". Google Home reads it
+    // alongside ColorTempPhysicalMin/Max to decide the slider's range; with defaults
+    // (1, 0xFEFF) it falls back to the 2-stop Candlelight/Blue-sky UI.
+    lc.color_control.color_capabilities                                  = 0x0010;
+    lc.color_control_color_temperature.color_temperature_mireds          = COLORTEMP_DEFAULT;
+    lc.color_control_color_temperature.color_temp_physical_min_mireds    = COLORTEMP_MIN;
+    lc.color_control_color_temperature.color_temp_physical_max_mireds    = COLORTEMP_MAX;
+    lc.color_control_color_temperature.couple_color_temp_to_level_min_mireds = COLORTEMP_MIN;
+    lc.color_control_color_temperature.start_up_color_temperature_mireds = nullptr;   // resume last persisted
 
     endpoint_t *ep = color_temperature_light::create(node, &lc, ENDPOINT_FLAG_NONE, nullptr);
     if (!ep) { ESP_LOGE(TAG, "endpoint create failed; restarting"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); }

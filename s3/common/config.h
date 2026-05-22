@@ -68,10 +68,12 @@ constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness 
 constexpr uint8_t  LED_FADE_STEP        = 1;        // duty units per fader tick (full 0..255 sweep ≈ 2.55 s)
 constexpr uint32_t LED_FADE_PERIOD_MS   = 10;
 constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal knob steps feel visually equal
-// Color temperature blend: WW = (ct-MIN)*max/span, CW = (MAX-ct)*max/span. Default 300 is mid-scale (50/50 warm/cool).
-constexpr uint16_t COLORTEMP_DEFAULT = 300;
-constexpr uint16_t COLORTEMP_MIN     = 100;
-constexpr uint16_t COLORTEMP_MAX     = 500;
+// Color temperature blend: WW = (ct-MIN)*max/span, CW = (MAX-ct)*max/span.
+// 153 (≈6500 K cool) and 454 (≈2200 K warm) match the CHIP reference lighting-app's
+// ColorTempPhysicalMin/MaxMireds — Google Home's slider sweeps that exact range.
+constexpr uint16_t COLORTEMP_DEFAULT = 250;   // ~4000 K boot value, matches lighting-app
+constexpr uint16_t COLORTEMP_MIN     = 153;
+constexpr uint16_t COLORTEMP_MAX     = 454;
 
 // Button: 1 tap = Matter OnOff toggle | 2 taps = knob mode (angle/brightness) | 3 taps = speed preset | hold ≥9 s = factory reset.
 constexpr uint32_t BTN_DEBOUNCE_MS           = 30;
