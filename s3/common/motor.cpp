@@ -15,17 +15,12 @@
 
 static const char *TAG = "motor";
 
-// NVS calibration: dir cached because initFOC's direction sweep is unreliable when
-// the rotor is pinned at the off-stop. homed flag skips install-time homing on
-// subsequent boots. pos persists user-coord position across plug/unplug — the
-// lead screw holds the rotor mechanically, but the incremental encoder resets to
-// 0 on power-on, so we restore the offset that makes user_angle match. All wiped
-// by matter_wipe_local_nvs() on factory reset.
+// NVS keys (all wiped by matter_wipe_local_nvs() on factory reset).
 static constexpr const char *NVS_NS            = "foc_cal";
-static constexpr const char *NVS_KEY_DIRECTION = "dir";
-static constexpr const char *NVS_KEY_HOMED     = "homed";
-static constexpr const char *NVS_KEY_POSITION  = "pos";
-static constexpr float       POS_SAVE_EPS_RAD  = 0.1f;   // skip save if move was <0.1 rad — spares flash
+static constexpr const char *NVS_KEY_DIRECTION = "dir";    // sensor_direction across boots; initFOC's sweep is unreliable at the off-stop
+static constexpr const char *NVS_KEY_HOMED     = "homed";  // install-time homing done flag
+static constexpr const char *NVS_KEY_POSITION  = "pos";    // last user_angle; restored as home_offset after the encoder resets on power-on
+static constexpr float       POS_SAVE_EPS_RAD  = 0.1f;     // skip save if move was <0.1 rad — spares flash
 
 // 200 µs busy-wait paces loopFOC at 5 kHz — quietest PID output on this motor; the
 // S3 FPU would otherwise free-run at ~50 kHz and whine.
@@ -37,7 +32,6 @@ static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
 
 static volatile float  s_target_angle          = 0.0f;
 static volatile float  s_shaft_angle_cached    = 0.0f;
-static volatile float  s_shaft_velocity_cached = 0.0f;
 static volatile bool   s_sync_pending          = false;
 static void          (*s_settle_cb)(float)     = nullptr;
 // Encoder reading that maps to user_angle=0; loaded from NVS at boot so the lead screw's
@@ -264,14 +258,9 @@ static void motor_foc_task(void *) {
         esp_restart();
     }
 
-    // Prime shaft_angle by running one loopFOC before the position loop reads it; otherwise
-    // pos_err is computed from the alignment-sweep's last sample (often a few rad off zero)
-    // and the loop drives the motor toward whatever stale value sat in shaft_angle.
-    s_motor.loopFOC();
+    s_motor.loopFOC();   // prime shaft_angle; alignment-sweep's last sample is stale otherwise
 
-    // Restore last-known position from NVS. Lead screw holds the rotor mechanically across
-    // plug/unplug; encoder reads 0 on fresh boot, so map current shaft_angle to the saved
-    // user_angle by setting home_offset = shaft_angle - saved_user_angle.
+    // Restore last-known user_angle from NVS so plug/unplug retains physical position.
     float saved_pos = 0.0f;
     if (load_position(&saved_pos)) {
         s_home_offset = s_motor.shaft_angle - saved_pos;
@@ -283,9 +272,7 @@ static void motor_foc_task(void *) {
         s_target_angle = 0.0f;
         ESP_LOGI(TAG, "no saved position; home_offset=%.3f", s_home_offset);
     }
-    s_shaft_angle_cached     = s_motor.shaft_angle - s_home_offset;
-    s_shaft_velocity_cached  = 0.0f;
-
+    s_shaft_angle_cached = s_motor.shaft_angle - s_home_offset;
     s_motor.disable();   // boot idle; first target change wakes the task
 
     float    commanded_vel     = 0.0f;
@@ -306,6 +293,7 @@ static void motor_foc_task(void *) {
             next_foc_us = now_us + FOC_PERIOD_US;
         }
 
+        uint32_t now_ms   = now_us / 1000;   // cache once; millis() is a syscall at 5 kHz
         // Position loop: physics-bounded trapezoidal descent toward target.
         // user_angle = shaft_angle - home_offset so plug/unplug restores the same logical position.
         float user_angle  = s_motor.shaft_angle - s_home_offset;
@@ -339,8 +327,8 @@ static void motor_foc_task(void *) {
         bool at_rest = fabsf(commanded_vel)          < VEL_AT_REST_EPS &&
                        fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS &&
                        fabsf(pos_err)                < POS_AT_REST_EPS;
-        if (!at_rest) last_active_ms = millis();
-        bool should_enable = (millis() - last_active_ms) < IDLE_DISABLE_MS;
+        if (!at_rest) last_active_ms = now_ms;
+        bool should_enable = (now_ms - last_active_ms) < IDLE_DISABLE_MS;
 
         if (should_enable) {
             if (!s_motor.enabled) s_motor.enable();
@@ -362,7 +350,6 @@ static void motor_foc_task(void *) {
         }
 
         s_shaft_angle_cached    = user_angle;
-        s_shaft_velocity_cached = s_motor.shaft_velocity;
     }
 }
 
@@ -371,19 +358,25 @@ void motor_init_and_start() {
                             MOTOR_TASK_PRIORITY, nullptr, CORE_MOTOR);
 }
 
-void motor_set_target_angle(float rad)     { s_target_angle = clamp_angle(rad); }
-void motor_nudge_target_angle(float d_rad) { s_target_angle = clamp_angle(s_target_angle + d_rad); }
+// portMUX guards the RMW in motor_nudge_target_angle against concurrent writes from CORE_OTHERS while motor task reads at 5 kHz.
+static portMUX_TYPE s_target_mux = portMUX_INITIALIZER_UNLOCKED;
+void motor_set_target_angle(float rad) {
+    float v = clamp_angle(rad);
+    portENTER_CRITICAL(&s_target_mux);
+    s_target_angle = v;
+    portEXIT_CRITICAL(&s_target_mux);
+}
+void motor_nudge_target_angle(float d_rad) {
+    portENTER_CRITICAL(&s_target_mux);
+    s_target_angle = clamp_angle(s_target_angle + d_rad);
+    portEXIT_CRITICAL(&s_target_mux);
+}
 void motor_request_matter_sync_on_settle() { s_sync_pending = true; }
 void motor_set_settle_callback(void (*cb)(float)) { s_settle_cb = cb; }
-
-
-float motor_get_target_angle()   { return s_target_angle; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }
-float motor_get_shaft_velocity() { return s_shaft_velocity_cached; }
 
 void motor_set_motion_velocity(float rad_per_sec) {
     if (rad_per_sec <= 0.0f) { s_motion_velocity = MOTION_VELOCITY; return; }
     if (rad_per_sec >  VELOCITY_LIMIT) rad_per_sec = VELOCITY_LIMIT;
     s_motion_velocity = rad_per_sec;
 }
-float motor_get_motion_velocity() { return s_motion_velocity; }

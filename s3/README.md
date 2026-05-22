@@ -364,14 +364,33 @@ fctry            0x420000 0x06000
 ### First-boot lead-screw homing
 
 On the **first boot** after a factory reset / fresh flash, the motor task drives the
-lead screw down at -10 rad/s until the stall detector trips against the off-stop,
-then sets `foc_cal:homed` in NVS and `esp_restart()`s. The next boot starts with
-encoder=0 = off, runs `initFOC` from scratch at the off-stop position (using the
-cached `foc_cal:dir` to skip the direction sweep), and proceeds straight into normal
-operation. Subsequent boots skip homing entirely.
+lead screw down at -3 rad/s with a low ~1 V Uq cap (gentle impact at the off-stop)
+until the stall detector trips, then sets `foc_cal:homed` + `foc_cal:pos=0` in NVS
+and `esp_restart()`s. The next boot starts with `encoder=0 = off`, runs `initFOC`
+from scratch at the off-stop position (using the cached `foc_cal:dir` to skip the
+unreliable direction sweep), and proceeds straight into normal operation. Subsequent
+boots skip homing entirely.
 
 Factory-reset paths (button hold ≥ 9 s, remote decommission) call
 `matter_wipe_local_nvs()` which clears `foc_cal`, so the next boot re-runs homing.
+
+### Position persistence across plug/unplug
+
+The lead-screw motor can't be back-driven by hand — the rotor's physical position
+survives power cycles unchanged — but the MT6701 in incremental quadrature mode
+resets the encoder count to 0 on every boot. To keep the lamp resuming where it
+left off:
+
+- Every time the position loop reaches an at-rest idle-disable transition with a
+  movement > 0.1 rad since the last save, the current `user_angle` is written to
+  NVS (`foc_cal:pos`, debounced).
+- On boot, `load_position()` reads the saved value and sets
+  `s_home_offset = shaft_angle − saved_user_angle` so subsequent reads of
+  `user_angle = shaft_angle − s_home_offset` produce the same logical position.
+  `s_target_angle` is initialised to the saved value (motor holds position) and
+  `s_sync_pending = true` so the first idle-disable transition pushes the current
+  level back to Matter — commissioned controllers see the correct state on boot
+  with no user interaction.
 
 ---
 
@@ -385,6 +404,7 @@ Factory-reset paths (button hold ≥ 9 s, remote decommission) call
 | Default `CHIP_FACTORY_NAMESPACE_PARTITION_LABEL` is `"nvs"`, which is CHIP's KVS partition — not where our mfg_tool data lives. | `GetSetupDiscriminator() failed: 201` at boot, device keeps falling back to test defaults. | `CONFIG_CHIP_FACTORY_NAMESPACE_PARTITION_LABEL="fctry"` in the M4 sdkconfig. | — |
 | Running `esp-matter-mfg-tool` without `--dac-in-secure-cert` emits only the fctry `*-partition.bin` (no `*_esp_secure_cert.bin`). The firmware uses `CONFIG_SEC_CERT_DAC_PROVIDER=y` and looks for DAC + private key in the `esp_secure_cert` partition (0xD000), which stays blank. | Boot looks fine, BLE advertises, PASE handshake succeeds, then commissioning aborts at the first OpCreds DAC fetch: `dac_provider: esp_secure_cert_get_device_cert failed err:-1` → `OpCreds: Failed CertificateChainRequest: 3` → controller times out and shows "something went wrong". | Always invoke mfg-tool with `--dac-in-secure-cert` (already in § 6's reference command); confirm `mfg_out/out/<vid_pid>/<uuid>/<uuid>_esp_secure_cert.bin` exists; flash it at `0xD000` alongside the fctry binary at `0x420000`. | — |
 | MT6701 runs in incremental quadrature; its counter starts at 0 on every boot regardless of physical rotor position. | Caching `zero_electric_angle` across boots produces the wrong Uq direction → motor has no torque. | Motor only caches `sensor_direction` in NVS; `zero_electric_angle` is re-measured by the brief 700 ms align pulse on every boot. | — |
+| `motor_set_target_angle()` and `motor_nudge_target_angle()` write a `volatile float` from CORE_OTHERS (CHIP task on apply_state, input task on knob nudge) while the motor task on CORE_MOTOR reads it at 5 kHz. The nudge is a read-modify-write — two concurrent calls can lose one increment. | Occasional missed knob detents under fast turns or concurrent Matter slider drags. | Wrap both setters in `portENTER_CRITICAL(&s_target_mux)` (`s3/common/motor.cpp`). | — |
 | Project path contains a space → libsodium's unquoted `-include` fails. | Random compile errors under `managed_components/espressif__libsodium/...`. | All builds run out of `~/esp/brushlesslamp-s3/` (rsynced from the project tree). | — |
 | BT controller `malloc` is pinned to `INTERNAL|DMA` caps. | Enabling PSRAM doesn't help (controller can't allocate from it) and can destabilise BLE init on the S3R8. | `CONFIG_SPIRAM is not set` in the M4 sdkconfig. | — |
 | Matter factory NVS only stores the Spake2+ verifier, not the raw passcode. | CHIP's `PrintOnboardingCodes` in the serial log regenerates a fallback QR — not the one that actually commissions the device. | Use the QR PNG or the `manualcode` column from `mfg_out/out/.../onb_codes.csv`. | expected Matter behavior. |

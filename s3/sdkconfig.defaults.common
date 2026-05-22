@@ -55,6 +55,5 @@ CONFIG_ARDUINO_SELECTIVE_NetBIOS=n
 CONFIG_ARDUINO_SELECTIVE_Update=n
 CONFIG_ARDUINO_SELECTIVE_Hash=n
 
-## Logging — INFO at runtime, DEBUG compiled-in.
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+## Compile DEBUG and below; runtime level is set per-stage (WARN in firmware/).
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

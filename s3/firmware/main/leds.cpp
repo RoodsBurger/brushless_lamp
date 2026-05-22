@@ -98,8 +98,6 @@ static void try_flush_duty_save(uint32_t now_ms) {
 }
 
 void leds_set_colortemp(uint16_t mireds)     { s_colortemp = mireds; }
-void leds_set_max_duty(uint8_t duty)         { s_max_duty = duty; }
-uint8_t leds_get_max_duty()                  { return s_max_duty; }
 void leds_nudge_max_duty(int16_t delta) {
     int32_t nd = (int32_t)s_max_duty + delta;
     if (nd < (int32_t)LED_MAX_DUTY_MIN) nd = LED_MAX_DUTY_MIN;  // floor, see config.h
@@ -128,7 +126,7 @@ static void leds_fader_task(void *) {
 }
 
 void leds_start_fader() {
-    xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 3072, nullptr, 2, nullptr, CORE_OTHERS);
+    xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 2048, nullptr, 2, nullptr, CORE_OTHERS);
 }
 
 // N cycles of two-state alternation centered on the current visual state; ends at the original state so the fader has nothing to re-ramp.
@@ -177,6 +175,6 @@ static void leds_pulse_task(void *param) {
 
 void leds_pulse(uint8_t count) {
     if (count == 0 || s_pulse_active) return;     // coalesce overlapping requests
-    xTaskCreatePinnedToCore(leds_pulse_task, "leds_pulse", 3072,
+    xTaskCreatePinnedToCore(leds_pulse_task, "leds_pulse", 2048,
                             (void *)(uintptr_t)count, 2, nullptr, CORE_OTHERS);
 }

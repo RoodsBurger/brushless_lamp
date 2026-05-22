@@ -51,7 +51,7 @@ static volatile uint16_t s_endpoint_id = 0;
 // Last-applied attribute values; written from CHIP task, read from motor / LED tasks.
 static volatile bool     s_on_off             = false;
 static volatile uint8_t  s_level              = 1;    // Matter MinLevel
-static volatile uint16_t s_color_temp_mireds  = 250;
+static volatile uint16_t s_color_temp_mireds  = COLORTEMP_DEFAULT;
 
 static void apply_state() {
     leds_set_colortemp(s_color_temp_mireds);
@@ -187,8 +187,7 @@ void matter_app_init() {
     }
 }
 
-extern "C" unsigned short matter_get_color_temp_mireds(void) { return s_color_temp_mireds; }
-extern "C" bool           matter_get_on_off(void)            { return s_on_off; }
+extern "C" bool matter_get_on_off(void) { return s_on_off; }
 
 // Button-driven OnOff toggle; mirrors what an attribute_update_cb write would do.
 namespace { struct OnOffPush { uint16_t ep; bool on; }; }

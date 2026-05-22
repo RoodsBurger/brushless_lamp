@@ -39,9 +39,7 @@ constexpr float    ANGLE_MAX          = 100.0f * 6.2831853f;  // 100 motor rotat
 constexpr float    MOTION_VELOCITY    = 15.0f;     // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
 constexpr float    MOTION_ACCEL       = 10.0f;      // rad/s² ramp + brake rate
 constexpr float    MOTION_EPS         = 0.5f;       // brake-on-reverse sign-change eps (rad/s)
-constexpr float    KNOB_STEP_RAD         = 6.2831853f;  // M3/M4 angle-mode: 1 motor rotation per detent
-constexpr float    KNOB_STEP_RAD_PER_SEC = 10.0f;       // M2 velocity-nudge: ±10 rad/s per detent
-constexpr float    KNOB_VEL_MAX_RAD_PER_SEC = 50.0f;    // M2 velocity-nudge clamp
+constexpr float    KNOB_STEP_RAD         = 6.2831853f;  // 1 motor rotation per detent
 
 // Triple-click cycles MOTION_VELOCITY through these presets; index is also the LED-pulse blink count - 1.
 constexpr float   MOTION_VELOCITY_PRESETS[]      = { 15.0f, 25.0f, 40.0f };
@@ -63,18 +61,14 @@ constexpr uint32_t LED_PWM_FREQ_HZ     = 25000;
 constexpr uint8_t  LED_PWM_RESOLUTION  = 8;
 
 // LED brightness ramps 0 → max linearly across the first LED_FADE_ANGLE_RAD of shaft travel; fader smooths discontinuous target changes.
-constexpr float    LED_FADE_ANGLE_RAD   = 1.0f;
+constexpr float    LED_FADE_ANGLE_RAD   = 3.0f;
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT = 200;      // 0..255 pre-gamma
 constexpr uint8_t  LED_MAX_DUTY_MIN     = 16;       // floor on knob + NVS load — below this gamma squashes to ~0 and the lamp reads as broken
 constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness mode
-constexpr uint8_t  LED_FADE_STEP        = 3;        // duty units per fader tick (full 0..255 sweep ≈ 0.85 s)
+constexpr uint8_t  LED_FADE_STEP        = 1;        // duty units per fader tick (full 0..255 sweep ≈ 2.55 s)
 constexpr uint32_t LED_FADE_PERIOD_MS   = 10;
 constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal knob steps feel visually equal
-constexpr uint16_t CT_MIN_MIREDS        = 153;      // Matter ColorTemperatureLight range
-constexpr uint16_t CT_MAX_MIREDS        = 500;
-
-// Color temperature blend: WW = (ct-100)*max/400, CW = (500-ct)*max/400.
-// Default 300 is mid-scale (50/50 warm/cool).
+// Color temperature blend: WW = (ct-MIN)*max/span, CW = (MAX-ct)*max/span. Default 300 is mid-scale (50/50 warm/cool).
 constexpr uint16_t COLORTEMP_DEFAULT = 300;
 constexpr uint16_t COLORTEMP_MIN     = 100;
 constexpr uint16_t COLORTEMP_MAX     = 500;

@@ -4,8 +4,11 @@
 dependencies:
   idf:
     version: ">=5.5.0"
+  ## Exact-pin arduino-esp32 to avoid 3.4.x surprises (btInUse weak-symbol
+  ## linkage + initArduino()/esp_matter::start order are sensitive to upstream
+  ## changes; verified against 3.3.7).
   espressif/arduino-esp32:
-    version: "^3.3.0"
+    version: "=3.3.7"
   ## EXACT pin (not a range). 2.9.x removed esp_secure_cert_get_priv_key()
   ## which CHIP's ESP32SecureCertDACProvider still calls
   ## (connectedhomeip#31382, esp-matter#798). Re-verified 2026-04-27 against

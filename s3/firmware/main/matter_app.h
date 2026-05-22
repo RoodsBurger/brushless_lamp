@@ -10,8 +10,7 @@ void matter_app_init();
 #ifdef __cplusplus
 extern "C" {
 #endif
-// Current ColorTemperatureMireds and OnOff — consumed by the LED fader.
-unsigned short matter_get_color_temp_mireds(void);
+// Current OnOff — consumed by the input task for the single-click toggle.
 bool           matter_get_on_off(void);
 
 // Push LevelControl::CurrentLevel from a knob-driven settle (1..254).
