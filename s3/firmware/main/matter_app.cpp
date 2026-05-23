@@ -146,9 +146,7 @@ void matter_app_init() {
     lc.level_control_lighting.start_up_current_level = nullptr;   // resume last persisted on power-up
     lc.color_control.color_mode              = (uint8_t)ColorControl::ColorMode::kColorTemperature;
     lc.color_control.enhanced_color_mode     = (uint8_t)ColorControl::ColorMode::kColorTemperature;
-    // ColorCapabilities bit 4 = "ColorTemperature supported". Google Home reads it
-    // alongside ColorTempPhysicalMin/Max to decide the slider's range; with defaults
-    // (1, 0xFEFF) it falls back to the 2-stop Candlelight/Blue-sky UI.
+    // ColorCapabilities bit 4 = ColorTemperature supported; Google Home reads this + Physical Min/Max to render the slider.
     lc.color_control.color_capabilities                                  = 0x0010;
     lc.color_control_color_temperature.color_temperature_mireds          = COLORTEMP_DEFAULT;
     lc.color_control_color_temperature.color_temp_physical_min_mireds    = COLORTEMP_MIN;
@@ -172,6 +170,15 @@ void matter_app_init() {
         ESP_LOGE(TAG, "esp_matter::start err=%d; restarting", err);
         vTaskDelay(pdMS_TO_TICKS(200));
         esp_restart();
+    }
+
+    // Push the LED-side restored CT into Matter so subscribers see it.
+    {
+        uint16_t ct = leds_get_colortemp();
+        s_color_temp_mireds = ct;
+        esp_matter_attr_val_t v = esp_matter_uint16(ct);
+        attribute::update(s_endpoint_id, ColorControl::Id,
+                          ColorControl::Attributes::ColorTemperatureMireds::Id, &v);
     }
 
     // Use printf, not ChipLogProgress: chip[*] INFO chatter during PASE/AddNOC backpressures USB-CDC TX and times commissioning out.

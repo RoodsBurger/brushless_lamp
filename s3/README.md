@@ -169,13 +169,13 @@ button.
 | Gesture                                        | Action |
 |------------------------------------------------|--------|
 | Turn the knob                                  | **Motor mode (default)**: each detent nudges the motor target by `KNOB_STEP_RAD` (one full motor rotation). LEDs fade with travel. |
-| Single click (< 400 ms, no follow-up)          | Toggle into **brightness mode**: the knob nudges LED `max_duty` instead (gamma-2.2 perceptual curve, floored at `LED_MAX_DUTY_MIN`). Another click returns to motor mode. |
-| Double click (two clicks < 400 ms apart)       | Cycle through `MOTION_VELOCITY_PRESETS` (8 / 15 / 25 / 40 rad/s). LEDs flash the new preset's index + 1 times as feedback. Persisted to NVS. |
+| Single click (< 400 ms, no follow-up)          | Matter `OnOff` toggle. Off → motor target 0; On → motor target = `level / 254 × ANGLE_MAX`. |
+| Double click (two clicks < 400 ms apart)       | Toggle into **brightness mode**: the knob nudges LED `max_duty` instead (gamma-2.2 perceptual curve, floored at `LED_MAX_DUTY_MIN`). Another double-click returns to motor mode. 2 LED blinks confirm the switch. |
+| Triple click (three clicks < 400 ms apart)     | Cycle through `MOTION_VELOCITY_PRESETS` (15 / 25 / 40 rad/s). LEDs flash the new preset's index + 1 times as feedback. Persisted to NVS. |
 | Hold ≥ 5 s                                     | 5 warning blinks. Release to cancel. |
-| Hold ≥ 9 s                                     | `esp_matter::factory_reset()`: wipes the Matter fabric + CHIP-KVS + our `foc_cal` / `leds` / `input` NVS namespaces, then reboots. |
-| Matter OnOff toggle (Home app)                 | Off → motor target 0, LEDs fade with travel. On → motor target = `level / 254 × ANGLE_MAX`. |
+| Hold ≥ 9 s                                     | Full `nvs_flash_erase()` + restart — wipes the Matter fabric + every NVS namespace and reboots. |
 | Matter Level slider                            | Sets motor target. Knob motion pushes the current level back into the Home app once the motor settles. |
-| Matter ColorTemperature slider                 | Retargets the LED warm/cool mix (153 mireds = cool, 500 = warm). Applied on the next fader tick. |
+| Matter ColorTemperature slider                 | Retargets the LED warm/cool mix (153 mireds ≈ 6500 K cool, 454 mireds ≈ 2200 K warm). Persisted to NVS so it survives reboots. |
 
 ---
 
@@ -602,6 +602,7 @@ knob turn           │                            │                │
 |------------|-----------|----------------------------------|---------|
 | `foc_cal`  | `dir`     | `motor_foc_task`                 | cached `sensor_direction` (±1). Present after first successful `initFOC()`; skips the direction sweep on subsequent boots. |
 | `leds`     | `maxduty` | `leds_fader_task` (debounced)    | user-selected brightness, persists across reboots. Floored at `LED_MAX_DUTY_MIN`. |
+| `leds`     | `ct`      | `leds_fader_task` (debounced)    | last color temperature in mireds, persists across reboots. Clamped to `[COLORTEMP_MIN, COLORTEMP_MAX]`; default `370` (≈2700 K, Google Home "Soft White"). |
 | `input`    | `spd_idx` | `input_task` double-click handler | selected speed preset index (0..3). |
 | `chip-*`   | —         | CHIP stack                       | Matter fabric, counters, NOC. `esp_matter::factory_reset` wipes everything in this NVS partition. |
 

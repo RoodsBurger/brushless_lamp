@@ -71,7 +71,7 @@ constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal
 // Color temperature blend: WW = (ct-MIN)*max/span, CW = (MAX-ct)*max/span.
 // 153 (≈6500 K cool) and 454 (≈2200 K warm) match the CHIP reference lighting-app's
 // ColorTempPhysicalMin/MaxMireds — Google Home's slider sweeps that exact range.
-constexpr uint16_t COLORTEMP_DEFAULT = 250;   // ~4000 K boot value, matches lighting-app
+constexpr uint16_t COLORTEMP_DEFAULT = 370;   // Soft White (~2700 K), the 2nd-warmest Google Home preset
 constexpr uint16_t COLORTEMP_MIN     = 153;
 constexpr uint16_t COLORTEMP_MAX     = 454;
 

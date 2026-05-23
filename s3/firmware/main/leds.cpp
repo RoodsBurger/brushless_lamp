@@ -13,9 +13,10 @@
 #include "config.h"
 #include "pins.h"
 
-// LED max duty persists across boots; LED_NVS_DEBOUNCE ms after the last knob nudge to spare flash.
+// LED max duty + color temperature persist across boots; both writes debounced LED_NVS_DEBOUNCE ms after the last set to spare flash.
 static constexpr const char    *LED_NVS_NS       = "leds";
 static constexpr const char    *LED_NVS_KEY_DUTY = "maxduty";
+static constexpr const char    *LED_NVS_KEY_CT   = "ct";
 static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;
 
 // Target state — written from input task / Matter callback on CORE_OTHERS.
@@ -71,18 +72,24 @@ void leds_init() {
     // Floor at MIN so an accidentally-zeroed saved value can't leave the lamp permanently dark.
     nvs_handle_t h;
     if (nvs_open(LED_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        uint8_t saved = 0;
-        if (nvs_get_u8(h, LED_NVS_KEY_DUTY, &saved) == ESP_OK) {
-            s_max_duty = (saved >= LED_MAX_DUTY_MIN) ? saved : LED_MAX_DUTY_DEFAULT;
+        uint8_t saved_duty = 0;
+        if (nvs_get_u8(h, LED_NVS_KEY_DUTY, &saved_duty) == ESP_OK) {
+            s_max_duty = (saved_duty >= LED_MAX_DUTY_MIN) ? saved_duty : LED_MAX_DUTY_DEFAULT;
+        }
+        uint16_t saved_ct = 0;
+        if (nvs_get_u16(h, LED_NVS_KEY_CT, &saved_ct) == ESP_OK &&
+            saved_ct >= COLORTEMP_MIN && saved_ct <= COLORTEMP_MAX) {
+            s_colortemp = saved_ct;
         }
         nvs_close(h);
     }
 }
 
-// Debounced commit — called from the fader task when it notices a pending save
-// has waited long enough. Keeps NVS flash wear to one write per knob gesture.
+// Debounced commits — fader task flushes a pending save once it has been quiet for LED_NVS_DEBOUNCE ms. Keeps NVS flash wear to one write per gesture.
 static volatile uint32_t s_duty_save_pending_ms = 0;
+static volatile uint32_t s_ct_save_pending_ms   = 0;
 static uint8_t           s_last_saved_duty      = 0xFF;
+static uint16_t          s_last_saved_ct        = 0xFFFF;
 static void try_flush_duty_save(uint32_t now_ms) {
     if (s_duty_save_pending_ms == 0) return;
     if (now_ms - s_duty_save_pending_ms < LED_NVS_DEBOUNCE) return;
@@ -96,8 +103,25 @@ static void try_flush_duty_save(uint32_t now_ms) {
     nvs_close(h);
     s_last_saved_duty = v;
 }
+static void try_flush_ct_save(uint32_t now_ms) {
+    if (s_ct_save_pending_ms == 0) return;
+    if (now_ms - s_ct_save_pending_ms < LED_NVS_DEBOUNCE) return;
+    s_ct_save_pending_ms = 0;
+    uint16_t v = s_colortemp;
+    if (v == s_last_saved_ct) return;
+    nvs_handle_t h;
+    if (nvs_open(LED_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u16(h, LED_NVS_KEY_CT, v);
+    nvs_commit(h);
+    nvs_close(h);
+    s_last_saved_ct = v;
+}
 
-void leds_set_colortemp(uint16_t mireds)     { s_colortemp = mireds; }
+void leds_set_colortemp(uint16_t mireds) {
+    s_colortemp = mireds;
+    s_ct_save_pending_ms = millis();
+}
+uint16_t leds_get_colortemp() { return s_colortemp; }
 void leds_nudge_max_duty(int16_t delta) {
     int32_t nd = (int32_t)s_max_duty + delta;
     if (nd < (int32_t)LED_MAX_DUTY_MIN) nd = LED_MAX_DUTY_MIN;  // floor, see config.h
@@ -120,7 +144,9 @@ static void leds_fader_task(void *) {
             ledcWrite(PIN_LED_CW, s_current_cw);
         }
 
-        try_flush_duty_save(millis());
+        uint32_t now_ms = millis();
+        try_flush_duty_save(now_ms);
+        try_flush_ct_save(now_ms);
         vTaskDelay(pdMS_TO_TICKS(LED_FADE_PERIOD_MS));
     }
 }
