@@ -21,12 +21,15 @@ static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;
 
 // Target state — written from input task / Matter callback on CORE_OTHERS.
 // On/off is implicit: motor_get_shaft_angle()<=0 → peak_for_angle returns 0 → lamp dark.
-static volatile uint16_t s_colortemp    = COLORTEMP_DEFAULT;
-static volatile uint8_t  s_max_duty     = LED_MAX_DUTY_DEFAULT;
+// CT has a separate fader-owned `current` value so the visible color slews even when
+// the target snaps instantly (Google Home slider drags arrive that way).
+static volatile uint16_t s_colortemp_target = COLORTEMP_DEFAULT;
+static volatile uint8_t  s_max_duty         = LED_MAX_DUTY_DEFAULT;
 
 // Fader state (read+written only from leds_fader_task).
-static uint8_t  s_current_ww = 0;
-static uint8_t  s_current_cw = 0;
+static uint8_t  s_current_ww        = 0;
+static uint8_t  s_current_cw        = 0;
+static uint16_t s_colortemp_current = COLORTEMP_DEFAULT;
 
 // While s_pulse_active the fader skips ledcWrite so the pulse task owns the pins.
 static volatile bool s_pulse_active = false;
@@ -63,6 +66,12 @@ static uint8_t step_toward(uint8_t cur, uint8_t tgt) {
     /* cur > tgt */  return (uint8_t)((cur > LED_FADE_STEP && (cur - LED_FADE_STEP) >= tgt) ? cur - LED_FADE_STEP : tgt);
 }
 
+static uint16_t step_ct_toward(uint16_t cur, uint16_t tgt) {
+    if (cur == tgt) return cur;
+    if (cur <  tgt) return (uint16_t)((tgt - cur <= CT_FADE_STEP_MIREDS) ? tgt : cur + CT_FADE_STEP_MIREDS);
+    /* cur > tgt */  return (uint16_t)((cur - tgt <= CT_FADE_STEP_MIREDS) ? tgt : cur - CT_FADE_STEP_MIREDS);
+}
+
 void leds_init() {
     ledcAttach(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION);
     ledcAttach(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION);
@@ -79,10 +88,11 @@ void leds_init() {
         uint16_t saved_ct = 0;
         if (nvs_get_u16(h, LED_NVS_KEY_CT, &saved_ct) == ESP_OK &&
             saved_ct >= COLORTEMP_MIN && saved_ct <= COLORTEMP_MAX) {
-            s_colortemp = saved_ct;
+            s_colortemp_target = saved_ct;
         }
         nvs_close(h);
     }
+    s_colortemp_current = s_colortemp_target;   // no boot-time CT slew from default to persisted
 }
 
 // Debounced commits — fader task flushes a pending save once it has been quiet for LED_NVS_DEBOUNCE ms. Keeps NVS flash wear to one write per gesture.
@@ -107,7 +117,7 @@ static void try_flush_ct_save(uint32_t now_ms) {
     if (s_ct_save_pending_ms == 0) return;
     if (now_ms - s_ct_save_pending_ms < LED_NVS_DEBOUNCE) return;
     s_ct_save_pending_ms = 0;
-    uint16_t v = s_colortemp;
+    uint16_t v = s_colortemp_target;
     if (v == s_last_saved_ct) return;
     nvs_handle_t h;
     if (nvs_open(LED_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
@@ -118,15 +128,15 @@ static void try_flush_ct_save(uint32_t now_ms) {
 }
 
 void leds_set_colortemp(uint16_t mireds) {
-    s_colortemp = mireds;
+    s_colortemp_target = mireds;
     s_ct_save_pending_ms = millis();
 }
-uint16_t leds_get_colortemp() { return s_colortemp; }
+uint16_t leds_get_colortemp() { return s_colortemp_target; }
 void leds_nudge_colortemp(int16_t delta_mireds) {
-    int32_t nc = (int32_t)s_colortemp + delta_mireds;
+    int32_t nc = (int32_t)s_colortemp_target + delta_mireds;
     if (nc < (int32_t)COLORTEMP_MIN) nc = COLORTEMP_MIN;
     if (nc > (int32_t)COLORTEMP_MAX) nc = COLORTEMP_MAX;
-    s_colortemp = (uint16_t)nc;
+    s_colortemp_target = (uint16_t)nc;
     s_ct_save_pending_ms = millis();
 }
 void leds_nudge_max_duty(int16_t delta) {
@@ -140,10 +150,11 @@ void leds_nudge_max_duty(int16_t delta) {
 static void leds_fader_task(void *) {
     while (true) {
         if (!s_pulse_active) {
-            // Target = gamma(peak_for_angle) split by color temperature; fader glides current → target.
+            // Smooth CT first so slider drags fade rather than step, then split current CT into WW/CW at the current peak; per-channel fader glides duty → target.
+            s_colortemp_current = step_ct_toward(s_colortemp_current, s_colortemp_target);
             uint8_t peak = peak_for_angle(motor_get_shaft_angle(), s_max_duty);
             uint8_t tgt_ww = 0, tgt_cw = 0;
-            ct_to_targets(s_colortemp, peak, &tgt_ww, &tgt_cw);
+            ct_to_targets(s_colortemp_current, peak, &tgt_ww, &tgt_cw);
 
             s_current_ww = step_toward(s_current_ww, tgt_ww);
             s_current_cw = step_toward(s_current_cw, tgt_cw);
@@ -166,7 +177,7 @@ void leds_start_fader() {
 static void leds_pulse_task(void *param) {
     uint8_t count = (uint8_t)(uintptr_t)param;
     uint8_t flash_ww = 0, flash_cw = 0;
-    ct_to_targets(s_colortemp, gamma_correct(s_max_duty), &flash_ww, &flash_cw);
+    ct_to_targets(s_colortemp_target, gamma_correct(s_max_duty), &flash_ww, &flash_cw);
 
     // Lamp dark → flash up to peak; lamp lit → blink down to 0. Symmetric so end == start.
     uint8_t a_ww = s_current_ww;

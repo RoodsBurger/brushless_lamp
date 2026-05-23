@@ -75,6 +75,8 @@ constexpr uint16_t COLORTEMP_DEFAULT = 370;   // Soft White (~2700 K), the 2nd-w
 constexpr uint16_t COLORTEMP_MIN     = 153;
 constexpr uint16_t COLORTEMP_MAX     = 454;
 constexpr int16_t  KNOB_CT_STEP_MIREDS = 10;  // CT mode: full warm↔cool sweep takes ~30 detents (≈1¼ knob rotations)
+// Per-tick CT slew so Google Home slider drags (which arrive as instant attribute snaps with TransitionTime=0) fade visually over ~600 ms instead of stepping.
+constexpr uint16_t CT_FADE_STEP_MIREDS = 5;
 
 // Button: 1 tap = Matter OnOff toggle | 2 taps = cycle knob mode (motor → brightness → CT) | 3 taps = speed preset | hold ≥9 s = factory reset.
 constexpr uint32_t BTN_DEBOUNCE_MS           = 30;
