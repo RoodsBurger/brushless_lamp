@@ -25,8 +25,10 @@ static const char *TAG = "input";
 static volatile int32_t  s_knob_delta = 0;
 static volatile uint8_t  s_knob_prev  = 0;
 
-static bool     s_brightness_mode = false;
-static uint8_t  s_speed_idx       = MOTION_VELOCITY_PRESET_DEFAULT;
+// Knob mode cycles motor → brightness → CT on each double-click; index doubles as the LED blink count.
+enum class KnobMode : uint8_t { MOTOR = 0, BRIGHTNESS = 1, CT = 2, COUNT = 3 };
+static KnobMode s_knob_mode  = KnobMode::MOTOR;
+static uint8_t  s_speed_idx  = MOTION_VELOCITY_PRESET_DEFAULT;
 
 static void input_load_speed_idx() {
     nvs_handle_t h;
@@ -65,10 +67,13 @@ static void on_single_click() {
 }
 
 static void on_double_click() {
-    s_brightness_mode = !s_brightness_mode;
-    // 2 blinks so the mode toggle can't be mistaken for the idx-0 speed blink.
-    leds_pulse(2);
-    ESP_LOGI(TAG, "mode=%s", s_brightness_mode ? "brightness" : "motor");
+    s_knob_mode = (KnobMode)(((uint8_t)s_knob_mode + 1) % (uint8_t)KnobMode::COUNT);
+    // 1/2/3 blinks → motor/brightness/CT. Triple-click reuses 1..3 for speed presets; user disambiguates by gesture.
+    leds_pulse((uint8_t)s_knob_mode + 1);
+    const char *name = (s_knob_mode == KnobMode::MOTOR)      ? "motor"
+                     : (s_knob_mode == KnobMode::BRIGHTNESS) ? "brightness"
+                     :                                          "colortemp";
+    ESP_LOGI(TAG, "mode=%s", name);
 }
 
 static void on_triple_click() {
@@ -149,11 +154,19 @@ static void input_task(void *) {
         portENABLE_INTERRUPTS();
 
         if (delta) {
-            if (s_brightness_mode) {
-                leds_nudge_max_duty((int16_t)(delta * LED_MAX_DUTY_STEP));
-            } else {
+            switch (s_knob_mode) {
+            case KnobMode::MOTOR:
                 motor_nudge_target_angle((float)delta * KNOB_STEP_RAD);
                 motor_request_matter_sync_on_settle();   // pushes level to Matter once at rest
+                break;
+            case KnobMode::BRIGHTNESS:
+                leds_nudge_max_duty((int16_t)(delta * LED_MAX_DUTY_STEP));
+                break;
+            case KnobMode::CT:
+                leds_nudge_colortemp((int16_t)(delta * KNOB_CT_STEP_MIREDS));
+                matter_push_colortemp(leds_get_colortemp());   // mirror to ColorControl so Home apps reflect the change
+                break;
+            default: break;
             }
         }
 

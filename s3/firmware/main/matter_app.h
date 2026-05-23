@@ -19,6 +19,9 @@ void matter_push_level_from_angle(float angle_rad);
 // Local OnOff toggle (button single-click). Off snaps motor to 0; on restores last level.
 void matter_push_onoff(bool on);
 
+// Push ColorControl::ColorTemperatureMireds from a knob-driven CT change.
+void matter_push_colortemp(uint16_t mireds);
+
 // Wipe foc_cal / leds / input NVS — esp_matter::factory_reset() only clears CHIP's own namespaces.
 void matter_wipe_local_nvs(void);
 #ifdef __cplusplus

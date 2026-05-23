@@ -122,6 +122,13 @@ void leds_set_colortemp(uint16_t mireds) {
     s_ct_save_pending_ms = millis();
 }
 uint16_t leds_get_colortemp() { return s_colortemp; }
+void leds_nudge_colortemp(int16_t delta_mireds) {
+    int32_t nc = (int32_t)s_colortemp + delta_mireds;
+    if (nc < (int32_t)COLORTEMP_MIN) nc = COLORTEMP_MIN;
+    if (nc > (int32_t)COLORTEMP_MAX) nc = COLORTEMP_MAX;
+    s_colortemp = (uint16_t)nc;
+    s_ct_save_pending_ms = millis();
+}
 void leds_nudge_max_duty(int16_t delta) {
     int32_t nd = (int32_t)s_max_duty + delta;
     if (nd < (int32_t)LED_MAX_DUTY_MIN) nd = LED_MAX_DUTY_MIN;  // floor, see config.h

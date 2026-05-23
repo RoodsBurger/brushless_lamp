@@ -74,8 +74,9 @@ constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal
 constexpr uint16_t COLORTEMP_DEFAULT = 370;   // Soft White (~2700 K), the 2nd-warmest Google Home preset
 constexpr uint16_t COLORTEMP_MIN     = 153;
 constexpr uint16_t COLORTEMP_MAX     = 454;
+constexpr int16_t  KNOB_CT_STEP_MIREDS = 10;  // CT mode: full warm↔cool sweep takes ~30 detents (≈1¼ knob rotations)
 
-// Button: 1 tap = Matter OnOff toggle | 2 taps = knob mode (angle/brightness) | 3 taps = speed preset | hold ≥9 s = factory reset.
+// Button: 1 tap = Matter OnOff toggle | 2 taps = cycle knob mode (motor → brightness → CT) | 3 taps = speed preset | hold ≥9 s = factory reset.
 constexpr uint32_t BTN_DEBOUNCE_MS           = 30;
 constexpr uint32_t BTN_CLICK_MAX_MS          = 400;
 constexpr uint32_t BTN_DOUBLE_CLICK_MS       = 400;

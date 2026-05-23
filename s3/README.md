@@ -170,7 +170,7 @@ button.
 |------------------------------------------------|--------|
 | Turn the knob                                  | **Motor mode (default)**: each detent nudges the motor target by `KNOB_STEP_RAD` (one full motor rotation). LEDs fade with travel. |
 | Single click (< 400 ms, no follow-up)          | Matter `OnOff` toggle. Off → motor target 0; On → motor target = `level / 254 × ANGLE_MAX`. |
-| Double click (two clicks < 400 ms apart)       | Toggle into **brightness mode**: the knob nudges LED `max_duty` instead (gamma-2.2 perceptual curve, floored at `LED_MAX_DUTY_MIN`). Another double-click returns to motor mode. 2 LED blinks confirm the switch. |
+| Double click (two clicks < 400 ms apart)       | Cycle knob mode through **motor → brightness → CT → motor**. In brightness mode the knob nudges LED `max_duty` (gamma-2.2 perceptual curve, floored at `LED_MAX_DUTY_MIN`); in CT mode it nudges color temperature by `KNOB_CT_STEP_MIREDS` and pushes the new mireds back to `ColorControl` so Google Home / Apple Home reflect the change. 1/2/3 LED blinks indicate the entered mode. |
 | Triple click (three clicks < 400 ms apart)     | Cycle through `MOTION_VELOCITY_PRESETS` (15 / 25 / 40 rad/s). LEDs flash the new preset's index + 1 times as feedback. Persisted to NVS. |
 | Hold ≥ 5 s                                     | 5 warning blinks. Release to cancel. |
 | Hold ≥ 9 s                                     | Full `nvs_flash_erase()` + restart — wipes the Matter fabric + every NVS namespace and reboots. |

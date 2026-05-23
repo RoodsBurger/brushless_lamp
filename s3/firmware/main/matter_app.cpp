@@ -245,6 +245,29 @@ static void matter_push_level_work(intptr_t arg) {
     delete p;
 }
 
+// Knob-driven CT change in CT mode; push the new mireds back to ColorControl so Home apps see it.
+namespace { struct CTPush { uint16_t ep; uint16_t mireds; }; }
+static void matter_push_colortemp_work(intptr_t arg) {
+    CTPush *p = reinterpret_cast<CTPush *>(arg);
+    esp_matter_attr_val_t v = esp_matter_uint16(p->mireds);
+    esp_err_t r = attribute::update(p->ep, ColorControl::Id,
+                                    ColorControl::Attributes::ColorTemperatureMireds::Id, &v);
+    if (r != ESP_OK) ESP_LOGE(TAG, "ct update failed: %d", r);
+    delete p;
+}
+extern "C" void matter_push_colortemp(uint16_t mireds) {
+    if (s_endpoint_id == 0) return;
+    if (mireds == s_color_temp_mireds) return;
+    s_color_temp_mireds = mireds;
+    auto *p = new CTPush{ s_endpoint_id, mireds };
+    CHIP_ERROR err = chip::DeviceLayer::PlatformMgr().ScheduleWork(
+        matter_push_colortemp_work, reinterpret_cast<intptr_t>(p));
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "ScheduleWork(ct) failed: %" CHIP_ERROR_FORMAT, err.Format());
+        delete p;
+    }
+}
+
 extern "C" void matter_push_level_from_angle(float angle_rad) {
     if (s_endpoint_id == 0) return;
     if (angle_rad < 0.0f) angle_rad = 0.0f;
