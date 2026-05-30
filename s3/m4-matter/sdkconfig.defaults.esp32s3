@@ -1,0 +1,52 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+## Run at the S3's rated 240 MHz — mbedTLS ECDSA during Matter commissioning
+## (PASE_Pake2 + CSR keypair) finishes inside the commissioner's per-step
+## timeout only at full clock.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+
+## USB-CDC console via USB_SERIAL_JTAG; Arduino Serial routes here via
+## ARDUINO_USB_MODE=1 in main/CMakeLists.txt.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+## PSRAM off: the BT controller pins its allocs to INTERNAL|DMA caps
+## (IDF bt.c:BLE_CONTROLLER_MALLOC_CAPS), so PSRAM never helps BLE bring-up,
+## and enabling it destabilises commissioning on S3R8's Octal-PSRAM variant.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# CONFIG_SPIRAM is not set
+
+## Factory data providers read VID / PID / discriminator / Spake2+ verifier /
+## DAC from the `fctry` + `esp_secure_cert` partitions populated by
+## esp-matter-mfg-tool. A board without those partitions flashed fails
+## commissioning with GetSetupDiscriminator()=CHIP_ERROR_INVALID_ARGUMENT.
+CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER=y
+CONFIG_ENABLE_ESP32_DEVICE_INSTANCE_INFO_PROVIDER=y
+CONFIG_SEC_CERT_DAC_PROVIDER=y
+CONFIG_FACTORY_COMMISSIONABLE_DATA_PROVIDER=y
+
+## Matter factory data lives in the `fctry` partition, not CHIP's default
+## `nvs` where it stores fabric state.
+CONFIG_CHIP_FACTORY_NAMESPACE_PARTITION_LABEL="fctry"
+
+## Both SECURE_CERT flags off so CHIP's DAC provider sees
+## esp_secure_cert_get_priv_key (gated by #ifndef DS_PERIPHERAL) AND
+## esp_secure_cert_get_priv_key_type (gated by #ifndef LEGACY_FORMATS).
+## Plain-blob DAC from our mfg_tool invocation needs both visible.
+# CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL is not set
+# CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS is not set
+
+## TWDT panic on timeout: if any task starves the IDLE task on core 0 >5 s,
+## reset cleanly (reason 0x06) instead of just logging. Production safety —
+## any future busy-loop bug self-recovers via reboot rather than bricking.
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+## Auto-open the commissioning window at boot when not yet commissioned —
+## starts BLE advertising so Apple Home / Google Home can discover the
+## device. Kconfig default is y but we explicitly assert it here so a stray
+## "is not set" override (e.g. from a stale sdkconfig) can't disable
+## commissioning silently.
+CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART=y

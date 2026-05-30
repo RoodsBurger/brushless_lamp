@@ -1,0 +1,19 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+## USB-C (USB_SERIAL_JTAG peripheral, same as C6 — not TinyUSB). Primary console is
+## ESP_LOGI / printf; arduino Serial is also routed here via the
+## -DARDUINO_USB_CDC_ON_BOOT=1 -DARDUINO_USB_MODE=1 defines in common/CMakeLists.txt.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+## 8 MB flash on XIAO S3. M1 doesn't need OTA, but flash-size must match real hw.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+## Quad PSRAM — not critical for motor-only, but cheap to enable and useful for
+## consistency with later stages where Matter will want it.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+## No BT, no WiFi — purely motor bring-up.
+CONFIG_BT_ENABLED=n
