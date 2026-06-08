@@ -35,7 +35,7 @@ constexpr float SENSOR_MIN_ELAPSED_TIME = 0.0005f;  // encoder delta-t gate (s);
 // here feeds a physics-bounded brake curve into move():
 //     desired = min(MOTION_VELOCITY, sqrt(2 * MOTION_ACCEL * |pos_err|))
 // Accel / cruise / decel profile lands exactly at target with v=0.
-constexpr float    ANGLE_MAX          = 100.0f * 6.2831853f;  // 100 motor rotations — shared by knob nudge and Matter level scale.
+constexpr float    ANGLE_MAX          = 77.0f * 6.2831853f;  // 77 motor rotations — reaches max lamp height at 100%; shared by knob nudge and Matter level scale.
 constexpr float    MOTION_VELOCITY    = 15.0f;     // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
 constexpr float    MOTION_ACCEL       = 10.0f;      // rad/s² ramp + brake rate
 constexpr float    MOTION_EPS         = 0.5f;       // brake-on-reverse sign-change eps (rad/s)
