@@ -1,0 +1,48 @@
+# PCBWay ASSEMBLY BOM - matches the 68 parts in fusion/BrushlessLamp.sch (authoritative).
+# Populate=No => DNP (do not place). Passives: PCBWay turnkey may substitute equivalents (match value/package/tolerance/voltage). Verify any LCSC# before ordering.
+# Hand this alongside the Fusion-exported Gerbers + Pick-and-Place(centroid). See 06-pcbway-assembly.md.
+RefDes,Qty,Value,Description,Package,Mount,MPN,Manufacturer,LCSC,Populate,Notes
+U_MCU,1,ESP32-S3-WROOM-1-N8R8,WiFi/BLE MCU module 8MB+8MB,Module,SMT,ESP32-S3-WROOM-1-N8R8,Espressif,C2913202,Yes,verify LCSC/stock
+U_DRV,1,DRV8313PWPR,3-phase BLDC gate driver,HTSSOP-28,SMT,DRV8313PWPR,Texas Instruments,C92482,Yes,thermal pad to GND
+U_BUCK,1,LMR51430YDDCR,24V->3.3V 3A buck,SOT-23-6,SMT,LMR51430YDDCR,Texas Instruments,C5210749,Yes,
+D_USB,1,USBLC6-2SC6,USB ESD protection array,SOT-23-6,SMT,USBLC6-2SC6,STMicroelectronics,C7519,Yes,
+Q_WW;Q_CW,2,AO3400A,N-MOSFET LED low-side,SOT-23,SMT,AO3400A,Alpha & Omega,C20917,Yes,
+Q1,1,AO3401A,P-MOSFET reverse-protect,SOT-23,SMT,AO3401A,Alpha & Omega,C15127,Yes,
+D_OR_USB,1,SS14,Schottky 40V 1A,SMA,SMT,SS14,MDD/Diodes,C2480,Yes,VBUS diode-OR to buck input
+D_Q1,1,BZT52C15,Zener 15V 0.5W,SOD-123,SMT,BZT52C15,various,C4332,Yes,Q1 Vgs clamp; verify LCSC
+TVS1,1,SMBJ30A,TVS 30V unidirectional 600W,SMB,SMT,SMBJ30A,various,C13983,Yes,24V transient clamp
+D_MCU,1,ESD 3.3V,TVS/ESD 3.3V working,SOD-323,SMT,CDSOD323-T03SC,Bourns,,Yes,generic 3V3 ESD; optional - may DNP
+D_CLW;D_CLC,2,clamp,LED drain TVS/Schottky,SOD-323,SMT,-,-,-,No,DNP - populate only if drain ringing >30V
+LED_STATUS,1,Green LED,status indicator,0603,SMT,19-217/GHC-YR1S2/3T,Everlight,C72043,Yes,generic green 0603; optional
+R_EN;R_BOOT;R_NSLEEP;R_NRESET;R_NFAULT;R_EN_DRV;R_FBB,7,10k,thick-film 1%,0603,SMT,0603WAF1002T5E,UNI-ROYAL,C25804,Yes,pull-ups + buck FB bottom
+R_FBT,1,45.3k,thick-film 1%,0603,SMT,0603WAF4532T5E,UNI-ROYAL,,Yes,CRITICAL 1% - sets Vout=3.318V
+R_CC1;R_CC2,2,5.1k,USB-C CC pulldown 1%,0603,SMT,0603WAF5101T5E,UNI-ROYAL,C23186,Yes,
+R_DP;R_DM,2,22R,USB series,0603,SMT,0603WAF220JT5E,UNI-ROYAL,C25092,Yes,
+R_Q1;R_ENB;R_PDW;R_PDC,4,100k,thick-film,0603,SMT,0603WAF1003T5E,UNI-ROYAL,C25803,Yes,gate pulldowns + buck EN
+R_GW;R_GC,2,33R,LED gate series,0603,SMT,0603WAF330JT5E,UNI-ROYAL,,Yes,
+R_STATUS,1,1k,LED series,0603,SMT,0603WAF1001T5E,UNI-ROYAL,C21190,Yes,
+C_MCU3;C_MCU4;C_BOOT_B;C_SENS,4,100nF,X7R 16V,0402,SMT,CL05B104KO5NNNC,Samsung,C1525,Yes,decoupling
+C_BOOT,1,100pF,C0G 50V,0402,SMT,CL05C101JB5NNNC,Samsung,,Yes,GPIO0 debounce - MUST stay small (never ~0.1uF)
+C_FF,1,22pF,C0G 50V,0402,SMT,CL05C220JB5NNNC,Samsung,,Yes,buck feed-forward (optional)
+C_MCU2;C_EN,2,1uF,X7R 16V,0603,SMT,CL10B105KB8NNNC,Samsung,C15849,Yes,
+C_VBUS,1,4.7uF,X5R 10V,0603,SMT,CL10A475KO8NNNC,Samsung,C19666,Yes,VBUS bulk
+C_CP,1,10nF,50V X7R,0603,SMT,CL10B103KB8NNNC,Samsung,,Yes,charge-pump flying cap (VM-rated)
+C_VCP;C_VM1;C_VM2,3,100nF,50V X7R,0603,SMT,CL10B104KB8NNNC,Samsung,C1591,Yes,VCP + VM decoupling
+C_V3P3,1,470nF,16V X7R,0603,SMT,CL10A474KO8NNNC,Samsung,,Yes,DRV V3P3 bypass
+C_MCU1,1,10uF,X5R 16V,0805,SMT,CL21A106KAYNNNE,Samsung,,Yes,
+C_OUT1;C_OUT2,2,22uF,X5R 10V,0805,SMT,CL21A226KOQNNNE,Samsung,C45783,Yes,buck output
+C_IN1,1,10uF,50V X7R,1210,SMT,CL32B106KBJNNNE,Samsung,C46653,Yes,buck input (derated 50V)
+C_IN2,1,4.7uF,50V X7R,1206,SMT,CL31B475KCHNNNE,Samsung,,Yes,buck input
+C_MCU_BULK,1,470uF 6.3V,polymer/tantalum-polymer,7343 (D),SMT,T520D477M006ATE025,Kemet,,Yes,*confirm CAP_D land; cures TX brownout
+C_IN_BULK;C_VM_BULK,2,100uF 50V,aluminium electrolytic SMD,8x10.5mm,SMT,EEE-FK1H101P,Panasonic,,Yes,*confirm CAP_V land (8mm can)
+L1,1,4.7uH,shielded power inductor >=1.5A,4x4mm,SMT,SWPA4030S4R7MT,Sunlord,,Yes,*confirm IND43 land; or Wurth 74438335047
+SW_RST;SW_BOOT,2,tactile,SMD pushbutton 4-pad,SMD,SMT,TS-1187A-B-A-B,XKB/various,C318884,Yes,*confirm TACT land
+F1,1,2A,fast chip fuse,1206,SMT,0466002.NR,Littelfuse,,Yes,confirm >=63VDC rating for 24V rail
+J_USB,1,USB-C 16P,USB 2.0 receptacle,SMT,SMT,TYPE-C-31-M-12,HRO,C165948,Yes,native USB flash/console
+J_BTN,1,JST-XH 2P,header (mate XHP-2),THT 2.5mm,THT,B2B-XH-A,JST,C144395,Yes,button SW/GND
+J_KNOB;J_LED,2,JST-XH 3P,header (mate XHP-3),THT 2.5mm,THT,B3B-XH-A,JST,C158012,Yes,knob A/B/GND and LED V+/W/C
+J_PWR,1,Screw 2P 5.0mm,terminal block,THT,THT,KF301-5.0-2P,Cixi Kefa,,Yes,24V V+/V-; verify LCSC
+J_MOTOR,1,Screw 3P 5.0mm,terminal block,THT,THT,KF301-5.0-3P,Cixi Kefa,,Yes,motor U/V/W; verify LCSC
+J_SENSOR,1,Screw 5P 3.5mm,terminal block,THT,THT,KF350-3.5-5P,Cixi Kefa,,Yes,encoder VCC/GND/A/B/Z; verify LCSC
+J_EXP,1,GPIO header 1x10,2.54mm male pin header,THT 2.54mm,THT,(generic 1x10 2.54mm header),various,,Yes,spare IO1/IO2/IO13/IO38-42 + 3V3/GND; DNP if you prefer bare pads
+J_PROG,1,prog pads,UART fallback pad field,SMD pads,-,-,-,-,No,DNP - bare test pads, no part

@@ -1,0 +1,11 @@
+RefDes,Qty,Value,Part / MPN,Package,LCSC,Notes
+# OPTIONAL custom bare-chip satellite (Block E-prime). NOT the baseline. Baseline reuses the existing MT6701 breakout via J_SENSOR - see 02-schematic-blocks.md Block E.,,,,,,
+U_ENC,1,MT6701QT-STD,MT6701QT-STD,QFN-16 3x3,C2913974,"Source PRE-PROGRAMMED to 1024-PPR ABZ, or plan a 5V I2C burn step"
+C_ENC1,1,0.1uF,CL05B104KO5NNN,0402,C1525,VDD decoupling at chip
+C_ENC2,1,1uF,CL10B105KB8NNN,0603,C15849,Bulk for cable run
+D_ENC,1,6V TVS (DNP),PESD5V0 / equiv,SOD-323,,VDD reliability - datasheet-recommended; DNP-optional
+R_A,1,10k (DNP),0603,0603,C25804,A line stiffening for long cable - DNP
+R_B,1,10k (DNP),0603,0603,C25804,B line stiffening - DNP
+R_Z,1,10k (DNP),0603,0603,C25804,Z line stiffening - DNP
+J_ENC,1,4-5 pin,JST-SH/GH,SMD,,Cable to main board: VDD/GND/A/B[/Z]
+MAGNET,1,Dia6x2.5mm diametric,N-grade NdFeB radial-magnetized,-,,On hollow shaft; die centered +/-0.3mm; air gap 0.5-2.0mm (~1mm)
