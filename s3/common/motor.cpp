@@ -1,6 +1,7 @@
 // FOC + position loop on core 1; encoder ISR attaches inside the task so noInterrupts() (per-core) blocks it.
 // loopFOC()/move() run even while disabled (they only refresh sensor state then) so back-driven motion stays visible.
-// Idle parks the DRV8313 via nSLEEP — saves ~25-100 mW and clears any latched OCP/TSD fault.
+// Idle parks the DRV8313 via nSLEEP: outputs Hi-Z so the shaft spins truly free (user wants zero torque/drag
+// at idle — plain disable() would short the windings and feel damped), and any latched OCP/TSD fault clears.
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
@@ -220,10 +221,12 @@ static void motor_foc_task(void *) {
     s_motor.voltage_limit        = VOLTAGE_LIMIT;
     s_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
     s_motor.controller           = MotionControlType::velocity;
-    // estimated_current enforces CURRENT_LIMIT via Uq = i·R + back-EMF; plain
-    // voltage mode in SimpleFOC 2.4.0 ignores current_limit/phase_resistance
-    // entirely and a stall would push 18 V / 5 Ω = 3.6 A into the DRV8313's OCP latch.
-    s_motor.torque_controller    = TorqueControlType::estimated_current;
+    // Voltage mode is the silent baseline (docs recommend it for low-speed
+    // gimbals). estimated_current would enforce CURRENT_LIMIT but its raw
+    // back-EMF feed-forward injects 1 kHz velocity-jitter into Uq and cancels
+    // the motor's EM damping — audibly louder (tried + reverted 2026-06-09).
+    // Stall current is bounded instead by the runtime stall handler below.
+    s_motor.torque_controller    = TorqueControlType::voltage;
     s_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
     s_motor.motion_downsample    = MOTION_DOWNSAMPLE;
     s_motor.modulation_centered  = 1;                 // 50 % duty at Uq=0 → no-torque idle state
@@ -390,7 +393,7 @@ static void motor_foc_task(void *) {
             s_motor.enable();                // enable() also resets the PIDs
         } else if (!should_enable && s_motor.enabled) {
             s_motor.disable();
-            // Sleep the driver: ~0.5 mA vs 1-5 mA active at 24 V, and nSLEEP-low clears latched faults.
+            // Sleep the driver: outputs Hi-Z (zero idle drag), ~0.5 mA vs 1-5 mA active, latched faults clear.
             digitalWrite(PIN_NSP, LOW);
             commanded_vel = 0.0f;
             // Persist resting position to NVS (debounced) so plug/unplug restores it.

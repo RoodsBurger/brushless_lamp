@@ -12,24 +12,26 @@ constexpr int      ENCODER_PPR       = 1024;        // MT6701 ABZ pulses/rev; Si
 constexpr float    SUPPLY_VOLTAGE    = 24.0f;
 constexpr float    PHASE_RESISTANCE  = 5.0f;
 constexpr float    KV_RATING         = 100.0f;
-// estimated_current torque mode enforces this for real (i·R + back-EMF model);
-// 0.5 A keeps a hard stall well under the DRV8313's 3 A-min OCP latch.
+// INERT in voltage torque mode (SimpleFOC 2.4.0 ignores it there). Stall
+// protection is the runtime stall handler + nSLEEP fault-clear in motor.cpp;
+// estimated_current mode (which does enforce this) was tried 2026-06-09 and
+// reverted: its unfiltered back-EMF feed-forward made the motor audibly louder.
 constexpr float    CURRENT_LIMIT     = 0.5f;
 constexpr float    VELOCITY_LIMIT    = 50.0f;       // SimpleFOC's internal velocity cap
 // 6 V sensor-align drives enough current (~1.2 A / 5 Ω) for a clean direction
 // sweep on first boot; sensor_direction is then cached in NVS.
 constexpr float    VOLTAGE_SENSOR_ALIGN = 6.0f;
-// Final Uq clamp. At 40 rad/s the loop needs ~10 V (back-EMF + IR + headroom);
-// 18 V keeps the output off the rail without losing torque, and stays above
-// the DRV8313's 200 ns min-on-time at idle duty.
+// Caps Uq in voltage-torque mode. At 40 rad/s the PID needs ~10 V (back-EMF +
+// IR + headroom); 18 V keeps the output off the rail without losing torque,
+// and stays above the DRV8313's 200 ns min-on-time at idle duty.
 constexpr float    VOLTAGE_LIMIT     = 18.0f;
 
-// Inner velocity PID. Output is a current setpoint (A) in estimated_current
-// mode — gains are the old voltage-mode values scaled by 1/PHASE_RESISTANCE.
-constexpr float PID_P             = 0.04f;
-constexpr float PID_I             = 4.0f;
+// Inner velocity PID. Output is Uq volts (voltage torque mode — the silent
+// baseline; SimpleFOC docs recommend it for low-speed gimbal motors).
+constexpr float PID_P             = 0.2f;
+constexpr float PID_I             = 20.0f;
 constexpr float PID_D             = 0.0f;
-constexpr float PID_OUTPUT_RAMP   = 30.0f;          // A/s cap on current-setpoint slew
+constexpr float PID_OUTPUT_RAMP   = 150.0f;         // V/s cap on Uq slew
 constexpr float LPF_TF            = 0.02f;          // velocity LPF time constant (s)
 constexpr int   MOTION_DOWNSAMPLE = 5;              // move() runs every N loopFOC ticks
 
