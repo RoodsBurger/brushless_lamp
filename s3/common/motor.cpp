@@ -1,4 +1,6 @@
-// FOC + position loop on core 1; encoder ISR attaches inside the task so noInterrupts() (per-core) blocks it. Idle-disable skips loopFOC()/move() so setPwm(0,0,0) holds.
+// FOC + position loop on core 1; encoder ISR attaches inside the task so noInterrupts() (per-core) blocks it.
+// loopFOC()/move() run even while disabled (they only refresh sensor state then) so back-driven motion stays visible.
+// Idle parks the DRV8313 via nSLEEP — saves ~25-100 mW and clears any latched OCP/TSD fault.
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
@@ -6,6 +8,7 @@
 #include <freertos/task.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <nvs.h>
 #include <math.h>
 
@@ -28,7 +31,7 @@ static constexpr uint32_t FOC_PERIOD_US = 200;
 
 static BLDCMotor       s_motor  (POLE_PAIRS);
 static BLDCDriver3PWM  s_driver (PIN_PWM_A, PIN_PWM_B, PIN_PWM_C);
-static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_CPR);
+static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_PPR);
 
 static volatile float  s_target_angle          = 0.0f;
 static volatile float  s_shaft_angle_cached    = 0.0f;
@@ -44,6 +47,9 @@ static volatile float  s_motion_velocity = MOTION_VELOCITY;
 
 static void IRAM_ATTR doMotorA() { s_encoder.handleA(); }
 static void IRAM_ATTR doMotorB() { s_encoder.handleB(); }
+
+// portMUX guards target-angle read-modify-writes against the 5 kHz reader on CORE_MOTOR.
+static portMUX_TYPE s_target_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static float clamp_angle(float rad) {
     if (rad < 0.0f)      return 0.0f;
@@ -95,10 +101,10 @@ static bool load_position(float *out) {
 static void save_position(float v) {
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, NVS_KEY_POSITION, &v, sizeof(float));
-    nvs_commit(h);
+    esp_err_t err = nvs_set_blob(h, NVS_KEY_POSITION, &v, sizeof(float));
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
-    s_last_saved_position = v;
+    if (err == ESP_OK) s_last_saved_position = v;   // failed saves retry on the next settle
 }
 
 static void save_homed_flag() {
@@ -110,16 +116,17 @@ static void save_homed_flag() {
     nvs_close(h);
 }
 
-// Drive lead screw against off-stop in closed-loop velocity until stall, then reboot to re-init FOC at the wedged rotor position.
-static void run_first_boot_homing() {
+// Drive lead screw against off-stop in closed-loop velocity until stall, then reboot to re-init FOC at the wedged rotor position. Returns false on timeout.
+static bool run_first_boot_homing() {
     constexpr float    HOMING_VELOCITY   = -3.0f;   // slow approach so stall fires before the rotor wedges hard
     constexpr uint32_t HOMING_TIMEOUT_MS = 120000;  // worst-case travel at -3 rad/s ≈ 360 rad
     constexpr float    HOMING_VOLTAGE    = 1.0f;    // very low Uq cap — soft impact at the off-stop
 
     ESP_LOGI(TAG, "first-boot homing: driving lead screw toward off-stop");
     float saved_vlimit = s_motor.voltage_limit;
-    s_motor.voltage_limit = HOMING_VOLTAGE;
+    s_motor.updateVoltageLimit(HOMING_VOLTAGE);   // also re-clamps PID anti-windup, unlike a raw field write
     s_motor.enable();
+    bool stalled = false;
 
     uint32_t start_ms          = millis();
     uint32_t motion_started_ms = 0;
@@ -165,6 +172,7 @@ static void run_first_boot_homing() {
             else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
                 ESP_LOGI(TAG, "first-boot homing: stalled at off-stop (shaft_angle=%.3f)",
                          s_motor.shaft_angle);
+                stalled = true;
                 break;
             }
         } else {
@@ -173,14 +181,14 @@ static void run_first_boot_homing() {
     }
 
     s_motor.disable();
-    s_motor.voltage_limit = saved_vlimit;   // restore runtime torque headroom
+    s_motor.updateVoltageLimit(saved_vlimit);   // restore runtime torque headroom
+    return stalled;
 }
 
 static void motor_foc_task(void *) {
     // Encoder ISRs must attach from this task so they register on CORE_MOTOR.
     s_encoder.quadrature       = Quadrature::ON;
     s_encoder.pullup           = Pullup::USE_INTERN;
-    s_encoder.min_elapsed_time = SENSOR_MIN_ELAPSED_TIME;
     s_encoder.init();
     s_encoder.enableInterrupts(doMotorA, doMotorB);
     s_motor.linkSensor(&s_encoder);
@@ -212,7 +220,10 @@ static void motor_foc_task(void *) {
     s_motor.voltage_limit        = VOLTAGE_LIMIT;
     s_motor.voltage_sensor_align = VOLTAGE_SENSOR_ALIGN;
     s_motor.controller           = MotionControlType::velocity;
-    s_motor.torque_controller    = TorqueControlType::voltage;
+    // estimated_current enforces CURRENT_LIMIT via Uq = i·R + back-EMF; plain
+    // voltage mode in SimpleFOC 2.4.0 ignores current_limit/phase_resistance
+    // entirely and a stall would push 18 V / 5 Ω = 3.6 A into the DRV8313's OCP latch.
+    s_motor.torque_controller    = TorqueControlType::estimated_current;
     s_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
     s_motor.motion_downsample    = MOTION_DOWNSAMPLE;
     s_motor.modulation_centered  = 1;                 // 50 % duty at Uq=0 → no-torque idle state
@@ -251,11 +262,14 @@ static void motor_foc_task(void *) {
 
     // First-boot install homing; flag skips it on subsequent boots, factory reset re-arms.
     if (!load_homed_flag()) {
-        run_first_boot_homing();
-        ESP_LOGI(TAG, "first-boot homing: saving flag and rebooting");
-        save_homed_flag();
-        vTaskDelay(pdMS_TO_TICKS(200));   // drain the log line
-        esp_restart();
+        if (run_first_boot_homing()) {
+            ESP_LOGI(TAG, "first-boot homing: saving flag and rebooting");
+            save_homed_flag();
+            vTaskDelay(pdMS_TO_TICKS(200));   // drain the log line
+            esp_restart();
+        }
+        // Timeout without a stall: run unhomed this boot; next reboot retries instead of trusting an arbitrary zero.
+        ESP_LOGE(TAG, "first-boot homing: timed out without stalling — continuing unhomed");
     }
 
     s_motor.loopFOC();   // prime shaft_angle; alignment-sweep's last sample is stale otherwise
@@ -264,7 +278,9 @@ static void motor_foc_task(void *) {
     float saved_pos = 0.0f;
     if (load_position(&saved_pos)) {
         s_home_offset = s_motor.shaft_angle - saved_pos;
-        s_target_angle = saved_pos;        // hold position until Matter / knob commands a new one
+        // Clamp: a firmware update may have shrunk ANGLE_MAX below the saved position;
+        // the clamped target walks the lamp down to the new max on first wake.
+        s_target_angle = clamp_angle(saved_pos);
         s_sync_pending = true;              // push current state to Matter on first idle-disable
         ESP_LOGI(TAG, "restored position: user_angle=%.3f (home_offset=%.3f)", saved_pos, s_home_offset);
     } else {
@@ -278,6 +294,8 @@ static void motor_foc_task(void *) {
     float    commanded_vel     = 0.0f;
     uint32_t last_ramp_us      = 0;
     uint32_t last_active_ms    = 0;
+    uint32_t motion_started_ms = 0;
+    uint32_t stuck_since_ms    = 0;
     uint32_t next_foc_us       = micros();
 
     while (true) {
@@ -293,13 +311,18 @@ static void motor_foc_task(void *) {
             next_foc_us = now_us + FOC_PERIOD_US;
         }
 
-        uint32_t now_ms   = now_us / 1000;   // cache once; millis() is a syscall at 5 kHz
+        // esp_timer wraps at 2^32 ms (~49.7 days); micros()/1000 would wrap every ~71.6 min and blip the idle timer.
+        uint32_t now_ms   = (uint32_t)(esp_timer_get_time() / 1000);
         // Position loop: physics-bounded trapezoidal descent toward target.
         // user_angle = shaft_angle - home_offset so plug/unplug restores the same logical position.
         float user_angle  = s_motor.shaft_angle - s_home_offset;
         float pos_err     = s_target_angle - user_angle;
         float brake_v     = sqrtf(2.0f * MOTION_ACCEL * fabsf(pos_err));
         float desired_mag = fminf(s_motion_velocity, brake_v);
+        // Deadband inside POS_AT_REST_EPS: the bare brake curve stays above
+        // VEL_AT_REST_EPS until ~0.002 rad, which stiction can make unreachable —
+        // the motor would hold torque forever instead of idling.
+        if (fabsf(pos_err) < POS_AT_REST_EPS) desired_mag = 0.0f;
         float desired_raw = (pos_err >= 0.0f) ? desired_mag : -desired_mag;
 
         // Brake-on-reverse: a target flip forces commanded_vel through zero
@@ -318,8 +341,39 @@ static void motor_foc_task(void *) {
             if      (commanded_vel <  desired_vel - step) commanded_vel += step;
             else if (commanded_vel >  desired_vel + step) commanded_vel -= step;
             else                                          commanded_vel  = desired_vel;
+        }
+        // dt ≥ 0.1 s (NVS commit, settle work): hold the previous commanded_vel for one tick instead of snapping.
+
+        // Stall: shaft frozen while commanded to move → accept the physical position
+        // as the new target, pulse nSLEEP to clear any latched DRV8313 OCP/TSD, and
+        // let the idle path persist + sync the position to Matter.
+        if (s_motor.enabled && fabsf(commanded_vel) > STALL_VEL_EPS) {
+            if (motion_started_ms == 0) motion_started_ms = now_ms;
+            bool past_warmup  = (now_ms - motion_started_ms) > STALL_WARMUP_MS;
+            bool shaft_frozen = fabsf(s_motor.shaft_velocity) < STALL_VEL_EPS;
+            if (past_warmup && shaft_frozen && stuck_since_ms == 0) {
+                stuck_since_ms = now_ms;
+            } else if (!(past_warmup && shaft_frozen)) {
+                stuck_since_ms = 0;
+            }
+            if (stuck_since_ms != 0 && (now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) {
+                portENTER_CRITICAL(&s_target_mux);
+                s_target_angle = clamp_angle(user_angle);
+                portEXIT_CRITICAL(&s_target_mux);
+                commanded_vel = 0.0f;
+                s_motor.PID_velocity.reset();    // drop the wound-up integrator so torque stops now, not at idle-disable
+                s_sync_pending = true;
+                digitalWrite(PIN_NSP, LOW);      // ≥20 µs low resets all latched faults
+                delayMicroseconds(50);
+                digitalWrite(PIN_NSP, HIGH);
+                delayMicroseconds(1100);         // DRV8313 tWAKE ≈ 1 ms
+                ESP_LOGW(TAG, "stall: accepting position %.3f as target", user_angle);
+                motion_started_ms = 0;
+                stuck_since_ms    = 0;
+            }
         } else {
-            commanded_vel = desired_vel;
+            motion_started_ms = 0;
+            stuck_since_ms    = 0;
         }
 
         // Idle-disable when commanded, shaft, and pos_err all rest below their eps; entry
@@ -330,24 +384,29 @@ static void motor_foc_task(void *) {
         if (!at_rest) last_active_ms = now_ms;
         bool should_enable = (now_ms - last_active_ms) < IDLE_DISABLE_MS;
 
-        if (should_enable) {
-            if (!s_motor.enabled) s_motor.enable();
-            s_motor.loopFOC();
-            s_motor.move(commanded_vel);
-        } else if (s_motor.enabled) {
+        if (should_enable && !s_motor.enabled) {
+            digitalWrite(PIN_NSP, HIGH);     // wake from idle sleep
+            delayMicroseconds(1100);         // DRV8313 tWAKE ≈ 1 ms before PWM resumes
+            s_motor.enable();                // enable() also resets the PIDs
+        } else if (!should_enable && s_motor.enabled) {
             s_motor.disable();
-            s_motor.PID_velocity.reset();
-            s_motor.shaft_velocity = 0.0f;
+            // Sleep the driver: ~0.5 mA vs 1-5 mA active at 24 V, and nSLEEP-low clears latched faults.
+            digitalWrite(PIN_NSP, LOW);
             commanded_vel = 0.0f;
             // Persist resting position to NVS (debounced) so plug/unplug restores it.
             if (isnan(s_last_saved_position) || fabsf(user_angle - s_last_saved_position) > POS_SAVE_EPS_RAD) {
                 save_position(user_angle);
             }
             if (s_sync_pending && s_settle_cb) {
+                s_sync_pending = false;   // clear first so a knob nudge during the callback re-arms it
                 s_settle_cb(user_angle);
-                s_sync_pending = false;
             }
         }
+
+        // While disabled these only refresh sensor state — keeps user_angle live so
+        // back-driven motion is visible to the wake check and the LED fade.
+        s_motor.loopFOC();
+        s_motor.move(commanded_vel);
 
         s_shaft_angle_cached    = user_angle;
     }
@@ -358,8 +417,6 @@ void motor_init_and_start() {
                             MOTOR_TASK_PRIORITY, nullptr, CORE_MOTOR);
 }
 
-// portMUX guards the RMW in motor_nudge_target_angle against concurrent writes from CORE_OTHERS while motor task reads at 5 kHz.
-static portMUX_TYPE s_target_mux = portMUX_INITIALIZER_UNLOCKED;
 void motor_set_target_angle(float rad) {
     float v = clamp_angle(rad);
     portENTER_CRITICAL(&s_target_mux);

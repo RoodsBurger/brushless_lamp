@@ -1,5 +1,5 @@
-// Knob + button: knob nudges motor target and arms a Matter settle push;
-// 9 s button hold calls esp_matter::factory_reset.
+// Knob + button: knob acts on the current mode (motor / brightness / CT);
+// 9 s button hold wipes the whole NVS partition and restarts.
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -122,8 +122,10 @@ static BtnEvent poll_button() {
         }
     }
 
-    // Window closed with N clicks pending → fire the matching event.
-    if (click_count > 0 && (now - last_click_ms) >= BTN_DOUBLE_CLICK_MS) {
+    // Window closed with N clicks pending → fire the matching event. The stable==HIGH
+    // gate keeps the window open while a follow-up tap is still held, so a slow
+    // double-click can't fire as two single clicks.
+    if (stable == HIGH && click_count > 0 && (now - last_click_ms) >= BTN_DOUBLE_CLICK_MS) {
         if      (click_count == 1) ev = BtnEvent::CLICK;
         else if (click_count == 2) ev = BtnEvent::DOUBLE_CLICK;
         else                        ev = BtnEvent::TRIPLE_CLICK;   // 3 or more
@@ -146,8 +148,14 @@ static BtnEvent poll_button() {
 }
 
 static void input_task(void *) {
+    // CT turns mirror to Matter only after the knob has been quiet — one attribute
+    // report per gesture instead of one per 10 ms tick.
+    constexpr uint32_t CT_PUSH_QUIET_MS = 250;
+    uint32_t ct_push_pending_ms = 0;
+
     while (true) {
         int32_t delta;
+        // Per-core mask is sufficient: the knob ISRs attach from input_init on CORE_OTHERS, same core this task is pinned to.
         portDISABLE_INTERRUPTS();
         delta        = s_knob_delta;
         s_knob_delta = 0;
@@ -164,10 +172,14 @@ static void input_task(void *) {
                 break;
             case KnobMode::CT:
                 leds_nudge_colortemp((int16_t)(delta * KNOB_CT_STEP_MIREDS));
-                matter_push_colortemp(leds_get_colortemp());   // mirror to ColorControl so Home apps reflect the change
+                ct_push_pending_ms = millis();
                 break;
             default: break;
             }
+        }
+        if (ct_push_pending_ms != 0 && (millis() - ct_push_pending_ms) >= CT_PUSH_QUIET_MS) {
+            ct_push_pending_ms = 0;
+            matter_push_colortemp(leds_get_colortemp());   // mirror to ColorControl so Home apps reflect the change
         }
 
         switch (poll_button()) {
@@ -183,6 +195,7 @@ static void input_task(void *) {
                                        // CurrentLevel write that doesn't get cleared), which on the next-but-one
                                        // boot fires apply_state() with a stale level and drives the motor
                                        // unexpectedly. Matches the clean state produced by `esptool erase-region`.
+                                       nvs_flash_deinit();   // unmount first so a concurrent commit can't interleave with the erase
                                        nvs_flash_erase();
                                        esp_restart();
                                        break;

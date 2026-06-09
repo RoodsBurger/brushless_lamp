@@ -1,8 +1,11 @@
-// LEDC dual-channel WW/CW at 25 kHz / 8-bit. Fader task on CORE_OTHERS steps current
-// → target one LED_FADE_STEP at a time. leds_pulse spawns a one-shot task that owns
-// the pins during its blink cycle via s_pulse_active.
+// LEDC dual-channel WW/CW at 25 kHz / 11-bit (perceptual values stay 0..255; gamma
+// expands to 0..2047 hardware duty). CW runs 180° out of phase via hpoint so the two
+// MOSFET current pulses interleave on the shared 24 V rail. Fader task on CORE_OTHERS
+// steps current → target one LED_FADE_STEP at a time. leds_pulse spawns a one-shot
+// task that owns the pins during its blink cycle via s_pulse_active.
 
 #include <Arduino.h>
+#include <driver/ledc.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <nvs.h>
@@ -26,25 +29,41 @@ static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;
 static volatile uint16_t s_colortemp_target = COLORTEMP_DEFAULT;
 static volatile uint8_t  s_max_duty         = LED_MAX_DUTY_DEFAULT;
 
-// Fader state (read+written only from leds_fader_task).
-static uint8_t  s_current_ww        = 0;
-static uint8_t  s_current_cw        = 0;
+// Fader state (read+written only from leds_fader_task). 11-bit hardware duty.
+static uint16_t s_current_ww        = 0;
+static uint16_t s_current_cw        = 0;
 static uint16_t s_colortemp_current = COLORTEMP_DEFAULT;
 
-// While s_pulse_active the fader skips ledcWrite so the pulse task owns the pins.
+// While s_pulse_active the fader skips the duty writes so the pulse task owns the pins.
 static volatile bool s_pulse_active = false;
 
+// Fixed channels (both land on LEDC timer 0) so CW can carry a phase offset.
+static constexpr uint8_t  LEDC_CH_WW = 0;
+static constexpr uint8_t  LEDC_CH_CW = 1;
+static constexpr uint32_t CW_HPOINT  = (LED_HW_DUTY_MAX + 1) / 2;   // half period = 180°
+
+// All duty writes go through here: WW switches at hpoint 0, CW half a period
+// later, so their current pulses interleave on the shared 24 V rail.
+static void led_write(uint8_t channel, uint16_t duty, uint32_t hpoint) {
+    ledc_set_duty_with_hpoint(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel, duty, hpoint);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel);
+}
+static void led_write_ww(uint16_t duty) { led_write(LEDC_CH_WW, duty, 0); }
+static void led_write_cw(uint16_t duty) { led_write(LEDC_CH_CW, duty, CW_HPOINT); }
+
 // Apply gamma to perceptual duty so equal knob steps feel visually equal (Stevens' power law).
-static uint8_t gamma_correct(uint8_t perceptual) {
+// 0..255 perceptual in → 0..2047 hardware duty out: the 11-bit range keeps the low end
+// of the gamma curve from collapsing into a handful of duty codes.
+static uint16_t gamma_correct(uint8_t perceptual) {
     if (perceptual == 0) return 0;
     float f = (float)perceptual * (1.0f / 255.0f);
-    return (uint8_t)(powf(f, LED_GAMMA) * 255.0f + 0.5f);
+    return (uint16_t)(powf(f, LED_GAMMA) * (float)LED_HW_DUTY_MAX + 0.5f);
 }
 
 // Continuous angle → peak-duty mapping. Below 0: off. 0..LED_FADE_ANGLE_RAD:
 // linear ramp. Above: clamp at max_duty. Gamma is applied to the post-ramp value
 // so brightness truly goes to 0 when the motor is at rest at angle 0.
-static uint8_t peak_for_angle(float angle, uint8_t max_duty) {
+static uint16_t peak_for_angle(float angle, uint8_t max_duty) {
     if (angle <= 0.0f) return 0;
     float frac = angle / LED_FADE_ANGLE_RAD;
     if (frac > 1.0f) frac = 1.0f;
@@ -52,18 +71,18 @@ static uint8_t peak_for_angle(float angle, uint8_t max_duty) {
     return gamma_correct(perceptual);
 }
 
-static void ct_to_targets(uint16_t ct, uint8_t peak, uint8_t *ww, uint8_t *cw) {
+static void ct_to_targets(uint16_t ct, uint16_t peak, uint16_t *ww, uint16_t *cw) {
     if (ct < COLORTEMP_MIN) ct = COLORTEMP_MIN;
     if (ct > COLORTEMP_MAX) ct = COLORTEMP_MAX;
     const uint16_t span = COLORTEMP_MAX - COLORTEMP_MIN;
-    *ww = (uint8_t)(((uint32_t)(ct - COLORTEMP_MIN) * peak) / span);
-    *cw = (uint8_t)(((uint32_t)(COLORTEMP_MAX - ct)  * peak) / span);
+    *ww = (uint16_t)(((uint32_t)(ct - COLORTEMP_MIN) * peak) / span);
+    *cw = (uint16_t)(peak - *ww);   // exact complement — both-truncated split dipped total brightness mid-range
 }
 
-static uint8_t step_toward(uint8_t cur, uint8_t tgt) {
+static uint16_t step_toward(uint16_t cur, uint16_t tgt) {
     if (cur == tgt) return cur;
-    if (cur <  tgt) return (uint8_t)((cur + LED_FADE_STEP <= tgt) ? cur + LED_FADE_STEP : tgt);
-    /* cur > tgt */  return (uint8_t)((cur > LED_FADE_STEP && (cur - LED_FADE_STEP) >= tgt) ? cur - LED_FADE_STEP : tgt);
+    if (cur <  tgt) return (uint16_t)((cur + LED_FADE_STEP <= tgt) ? cur + LED_FADE_STEP : tgt);
+    /* cur > tgt */  return (uint16_t)((cur > LED_FADE_STEP && (cur - LED_FADE_STEP) >= tgt) ? cur - LED_FADE_STEP : tgt);
 }
 
 static uint16_t step_ct_toward(uint16_t cur, uint16_t tgt) {
@@ -73,10 +92,11 @@ static uint16_t step_ct_toward(uint16_t cur, uint16_t tgt) {
 }
 
 void leds_init() {
-    ledcAttach(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION);
-    ledcAttach(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION);
-    ledcWrite(PIN_LED_WW, 0);
-    ledcWrite(PIN_LED_CW, 0);
+    // Explicit channels (not auto-assign) so led_write_* can address them for the hpoint offset.
+    ledcAttachChannel(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION, LEDC_CH_WW);
+    ledcAttachChannel(PIN_LED_CW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION, LEDC_CH_CW);
+    led_write_ww(0);
+    led_write_cw(0);
 
     // Floor at MIN so an accidentally-zeroed saved value can't leave the lamp permanently dark.
     nvs_handle_t h;
@@ -128,6 +148,10 @@ static void try_flush_ct_save(uint32_t now_ms) {
 }
 
 void leds_set_colortemp(uint16_t mireds) {
+    // Clamp before persisting: leds_init rejects out-of-range NVS values, so an
+    // unclamped inbound write would silently reset to default on the next boot.
+    if (mireds < COLORTEMP_MIN) mireds = COLORTEMP_MIN;
+    if (mireds > COLORTEMP_MAX) mireds = COLORTEMP_MAX;
     s_colortemp_target = mireds;
     s_ct_save_pending_ms = millis();
 }
@@ -152,14 +176,14 @@ static void leds_fader_task(void *) {
         if (!s_pulse_active) {
             // Smooth CT first so slider drags fade rather than step, then split current CT into WW/CW at the current peak; per-channel fader glides duty → target.
             s_colortemp_current = step_ct_toward(s_colortemp_current, s_colortemp_target);
-            uint8_t peak = peak_for_angle(motor_get_shaft_angle(), s_max_duty);
-            uint8_t tgt_ww = 0, tgt_cw = 0;
+            uint16_t peak = peak_for_angle(motor_get_shaft_angle(), s_max_duty);
+            uint16_t tgt_ww = 0, tgt_cw = 0;
             ct_to_targets(s_colortemp_current, peak, &tgt_ww, &tgt_cw);
 
             s_current_ww = step_toward(s_current_ww, tgt_ww);
             s_current_cw = step_toward(s_current_cw, tgt_cw);
-            ledcWrite(PIN_LED_WW, s_current_ww);
-            ledcWrite(PIN_LED_CW, s_current_cw);
+            led_write_ww(s_current_ww);
+            led_write_cw(s_current_cw);
         }
 
         uint32_t now_ms = millis();
@@ -176,35 +200,33 @@ void leds_start_fader() {
 // N cycles of two-state alternation centered on the current visual state; ends at the original state so the fader has nothing to re-ramp.
 static void leds_pulse_task(void *param) {
     uint8_t count = (uint8_t)(uintptr_t)param;
-    uint8_t flash_ww = 0, flash_cw = 0;
+    uint16_t flash_ww = 0, flash_cw = 0;
     ct_to_targets(s_colortemp_target, gamma_correct(s_max_duty), &flash_ww, &flash_cw);
 
     // Lamp dark → flash up to peak; lamp lit → blink down to 0. Symmetric so end == start.
-    uint8_t a_ww = s_current_ww;
-    uint8_t a_cw = s_current_cw;
-    uint8_t b_ww, b_cw;
+    uint16_t a_ww = s_current_ww;
+    uint16_t a_cw = s_current_cw;
+    uint16_t b_ww, b_cw;
     if (a_ww == 0 && a_cw == 0) {
         b_ww = flash_ww; b_cw = flash_cw;   // lamp off → flash to peak and back
     } else {
         b_ww = 0;        b_cw = 0;          // lamp on → blink off and back
     }
 
-    s_pulse_active = true;
-
     for (uint8_t i = 0; i < count; i++) {
         for (int s = 0; s <= 20; s++) {                  // a → b
             uint32_t w = ((uint32_t)a_ww * (20 - s) + (uint32_t)b_ww * s) / 20;
             uint32_t c = ((uint32_t)a_cw * (20 - s) + (uint32_t)b_cw * s) / 20;
-            ledcWrite(PIN_LED_WW, (uint8_t)w);
-            ledcWrite(PIN_LED_CW, (uint8_t)c);
+            led_write_ww((uint16_t)w);
+            led_write_cw((uint16_t)c);
             vTaskDelay(pdMS_TO_TICKS(8));
         }
         vTaskDelay(pdMS_TO_TICKS(80));
         for (int s = 0; s <= 20; s++) {                  // b → a
             uint32_t w = ((uint32_t)b_ww * (20 - s) + (uint32_t)a_ww * s) / 20;
             uint32_t c = ((uint32_t)b_cw * (20 - s) + (uint32_t)a_cw * s) / 20;
-            ledcWrite(PIN_LED_WW, (uint8_t)w);
-            ledcWrite(PIN_LED_CW, (uint8_t)c);
+            led_write_ww((uint16_t)w);
+            led_write_cw((uint16_t)c);
             vTaskDelay(pdMS_TO_TICKS(8));
         }
         vTaskDelay(pdMS_TO_TICKS(80));
@@ -219,6 +241,11 @@ static void leds_pulse_task(void *param) {
 
 void leds_pulse(uint8_t count) {
     if (count == 0 || s_pulse_active) return;     // coalesce overlapping requests
-    xTaskCreatePinnedToCore(leds_pulse_task, "leds_pulse", 2048,
-                            (void *)(uintptr_t)count, 2, nullptr, CORE_OTHERS);
+    // Claim the pins before the task exists — two gestures inside one scheduling
+    // window could otherwise spawn two pulse tasks fighting over the channels.
+    s_pulse_active = true;
+    if (xTaskCreatePinnedToCore(leds_pulse_task, "leds_pulse", 2048,
+                                (void *)(uintptr_t)count, 2, nullptr, CORE_OTHERS) != pdPASS) {
+        s_pulse_active = false;
+    }
 }

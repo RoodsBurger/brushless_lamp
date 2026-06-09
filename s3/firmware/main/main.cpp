@@ -1,4 +1,4 @@
-// M4-matter: ColorTemperatureLight Matter endpoint + knob/button local control.
+// BrushlessLamp firmware: ColorTemperatureLight Matter endpoint + knob/button local control.
 
 #include <Arduino.h>
 #include <driver/gpio.h>
@@ -55,7 +55,7 @@ extern "C" void app_main() {
     initArduino();
     delay(500);
 
-    printf("\n=== BrushlessLamp M4-matter (S3) ===\n");
+    printf("\n=== BrushlessLamp (S3) ===\n");
     printf("[boot] reset_reason=%s (%d)\n",
            reset_reason_str(esp_reset_reason()), (int)esp_reset_reason());
 

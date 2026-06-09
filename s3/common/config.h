@@ -8,28 +8,30 @@
 // Motor electrical.
 constexpr uint32_t PWM_FREQ_HZ       = 25000;
 constexpr int      POLE_PAIRS        = 11;
-constexpr int      ENCODER_CPR       = 1024;
+constexpr int      ENCODER_PPR       = 1024;        // MT6701 ABZ pulses/rev; SimpleFOC quadruples to 4096 CPR in quadrature
 constexpr float    SUPPLY_VOLTAGE    = 24.0f;
 constexpr float    PHASE_RESISTANCE  = 5.0f;
 constexpr float    KV_RATING         = 100.0f;
+// estimated_current torque mode enforces this for real (i·R + back-EMF model);
+// 0.5 A keeps a hard stall well under the DRV8313's 3 A-min OCP latch.
 constexpr float    CURRENT_LIMIT     = 0.5f;
 constexpr float    VELOCITY_LIMIT    = 50.0f;       // SimpleFOC's internal velocity cap
 // 6 V sensor-align drives enough current (~1.2 A / 5 Ω) for a clean direction
 // sweep on first boot; sensor_direction is then cached in NVS.
 constexpr float    VOLTAGE_SENSOR_ALIGN = 6.0f;
-// Caps Uq in voltage-torque mode. At 40 rad/s the PID needs ~10 V (back-EMF +
-// IR + headroom); 18 V keeps the output off the rail without losing torque,
-// and stays above the DRV8313's 200 ns min-on-time at idle duty.
+// Final Uq clamp. At 40 rad/s the loop needs ~10 V (back-EMF + IR + headroom);
+// 18 V keeps the output off the rail without losing torque, and stays above
+// the DRV8313's 200 ns min-on-time at idle duty.
 constexpr float    VOLTAGE_LIMIT     = 18.0f;
 
-// Inner velocity PID.
-constexpr float PID_P             = 0.2f;
-constexpr float PID_I             = 20.0f;
+// Inner velocity PID. Output is a current setpoint (A) in estimated_current
+// mode — gains are the old voltage-mode values scaled by 1/PHASE_RESISTANCE.
+constexpr float PID_P             = 0.04f;
+constexpr float PID_I             = 4.0f;
 constexpr float PID_D             = 0.0f;
-constexpr float PID_OUTPUT_RAMP   = 150.0f;         // V/s cap on Uq slew
+constexpr float PID_OUTPUT_RAMP   = 30.0f;          // A/s cap on current-setpoint slew
 constexpr float LPF_TF            = 0.02f;          // velocity LPF time constant (s)
 constexpr int   MOTION_DOWNSAMPLE = 5;              // move() runs every N loopFOC ticks
-constexpr float SENSOR_MIN_ELAPSED_TIME = 0.0005f;  // encoder delta-t gate (s); filters 1-LSB quantization spikes without LPF lag
 
 // App-level position loop. SimpleFOC runs velocity mode; the position loop
 // here feeds a physics-bounded brake curve into move():
@@ -46,7 +48,8 @@ constexpr float   MOTION_VELOCITY_PRESETS[]      = { 15.0f, 25.0f, 40.0f };
 constexpr uint8_t MOTION_VELOCITY_PRESET_COUNT   = sizeof(MOTION_VELOCITY_PRESETS) / sizeof(MOTION_VELOCITY_PRESETS[0]);
 constexpr uint8_t MOTION_VELOCITY_PRESET_DEFAULT = 0;
 
-// 0.3-rad POS eps is ≈17° of shaft slack — wide so the motor doesn't hold torque indefinitely when parked near target.
+// 0.3-rad POS eps is ≈17° of shaft slack — the position loop deadbands inside it
+// so the motor doesn't hold torque indefinitely when parked near target.
 constexpr uint32_t IDLE_DISABLE_MS  = 250;
 constexpr float    VEL_AT_REST_EPS  = 0.2f;
 constexpr float    POS_AT_REST_EPS  = 0.3f;
@@ -55,17 +58,20 @@ constexpr float    STALL_VEL_EPS    = 0.5f;   // shaft slowing past this is "fro
 constexpr uint32_t STALL_WARMUP_MS  = 400;   // grace after engage so the trapezoidal ramp doesn't false-trip
 constexpr uint32_t STALL_TIMEOUT_MS = 150;   // sustained-frozen window before stall fires
 
-// LED driver (LEDC). 25 kHz keeps PWM well above the audible band; 8-bit duty
-// gives 256 levels which is plenty once the gamma curve is applied.
+// LED driver (LEDC). 25 kHz keeps PWM well above the audible band; 10-bit duty
+// gives the gamma curve 4× finer low-end steps than 8-bit. 10 bits is the max at
+// 25 kHz: arduino-esp32 clocks LEDC from the 40 MHz XTAL (40 MHz / 25 kHz = 1600
+// counts < 2^11). Perceptual values stay 0..255; hardware duty is 0..1023.
 constexpr uint32_t LED_PWM_FREQ_HZ     = 25000;
-constexpr uint8_t  LED_PWM_RESOLUTION  = 8;
+constexpr uint8_t  LED_PWM_RESOLUTION  = 10;
+constexpr uint16_t LED_HW_DUTY_MAX     = 1023;
 
 // LED brightness ramps 0 → max linearly across the first LED_FADE_ANGLE_RAD of shaft travel; fader smooths discontinuous target changes.
 constexpr float    LED_FADE_ANGLE_RAD   = 3.0f;
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT = 200;      // 0..255 pre-gamma
 constexpr uint8_t  LED_MAX_DUTY_MIN     = 16;       // floor on knob + NVS load — below this gamma squashes to ~0 and the lamp reads as broken
 constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness mode
-constexpr uint8_t  LED_FADE_STEP        = 1;        // duty units per fader tick (full 0..255 sweep ≈ 2.55 s)
+constexpr uint16_t LED_FADE_STEP        = 4;        // 10-bit duty units per fader tick (full 0..1023 sweep ≈ 2.56 s)
 constexpr uint32_t LED_FADE_PERIOD_MS   = 10;
 constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal knob steps feel visually equal
 // Color temperature blend: WW = (ct-MIN)*max/span, CW = (MAX-ct)*max/span.

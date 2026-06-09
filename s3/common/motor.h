@@ -10,7 +10,9 @@ void  motor_set_target_angle(float rad);      // absolute target, clamped to [0,
 void  motor_nudge_target_angle(float d_rad);  // knob-driven relative tweak
 float motor_get_shaft_angle();
 
-// M4 registers matter_push_level_from_angle here.
+// Fires on idle-disable entry, ON THE CORE-1 FOC TASK — keep it short, no blocking
+// I/O or INFO logs (USB-CDC backpressure can stall the caller for seconds).
+// matter_app registers matter_push_level_from_angle here.
 void  motor_set_settle_callback(void (*cb)(float angle_rad));
 
 // Knob nudges arm this so the next rest event pushes position to Matter; Matter-driven moves don't, to avoid bouncing writes through the callback.

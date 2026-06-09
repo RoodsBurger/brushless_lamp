@@ -6,6 +6,7 @@
 #include <esp_log.h>
 #include <esp_matter.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -165,6 +166,19 @@ void matter_app_init() {
     if (auto *a = attribute::get(s_endpoint_id, ColorControl::Id,
                                  ColorControl::Attributes::ColorTemperatureMireds::Id)) attribute::set_deferred_persistence(a);
 
+    // Seed the shadow cache from the values the data model restored from NVS —
+    // attribute restore doesn't fire attribute_update_cb, so without this an
+    // Off→reboot→On round-trip applies level=1 (~0% height) instead of the saved level.
+    {
+        esp_matter_attr_val_t v = esp_matter_invalid(nullptr);
+        if (attribute::get_val(s_endpoint_id, OnOff::Id,
+                               OnOff::Attributes::OnOff::Id, &v) == ESP_OK) s_on_off = v.val.b;
+        v = esp_matter_invalid(nullptr);
+        if (attribute::get_val(s_endpoint_id, LevelControl::Id,
+                               LevelControl::Attributes::CurrentLevel::Id, &v) == ESP_OK &&
+            v.val.u8 >= 1 && v.val.u8 <= 254) s_level = v.val.u8;
+    }
+
     esp_err_t err = esp_matter::start(event_cb);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_matter::start err=%d; restarting", err);
@@ -172,13 +186,19 @@ void matter_app_init() {
         esp_restart();
     }
 
-    // Push the LED-side restored CT into Matter so subscribers see it.
+    // Mains-powered: keep the modem awake so Matter commands aren't gated on the AP's DTIM interval.
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    // Push the LED-side restored CT into Matter from the CHIP task — attribute::update
+    // isn't safe from app_main once the stack is live.
     {
         uint16_t ct = leds_get_colortemp();
         s_color_temp_mireds = ct;
-        esp_matter_attr_val_t v = esp_matter_uint16(ct);
-        attribute::update(s_endpoint_id, ColorControl::Id,
-                          ColorControl::Attributes::ColorTemperatureMireds::Id, &v);
+        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg) {
+            esp_matter_attr_val_t v = esp_matter_uint16((uint16_t)arg);
+            attribute::update(s_endpoint_id, ColorControl::Id,
+                              ColorControl::Attributes::ColorTemperatureMireds::Id, &v);
+        }, (intptr_t)ct);
     }
 
     // Use printf, not ChipLogProgress: chip[*] INFO chatter during PASE/AddNOC backpressures USB-CDC TX and times commissioning out.
@@ -226,20 +246,23 @@ extern "C" void matter_push_onoff(bool on) {
 }
 
 // also_on / force_off are mutually exclusive: knob up from rest → OnOff=true;
-// knob down to 0 → OnOff=false (else Home stays at "On, 1%" because MinLevel=1).
+// knob down to 0 → OnOff=false only — CurrentLevel keeps the pre-off value so
+// the next On restores the remembered height (Home renders "Off" regardless).
 namespace {
 struct LevelPush { uint16_t ep; uint8_t level; bool also_on; bool force_off; };
 }
 static void matter_push_level_work(intptr_t arg) {
     LevelPush *p = reinterpret_cast<LevelPush *>(arg);
-    // Must use the nullable variant — the non-nullable one is silently rejected with ESP_ERR_INVALID_ARG (258) because the cluster declares CurrentLevel nullable.
-    esp_matter_attr_val_t v = esp_matter_nullable_uint8(p->level);
-    esp_err_t r = attribute::update(p->ep, LevelControl::Id,
-                                    LevelControl::Attributes::CurrentLevel::Id, &v);
-    if (r != ESP_OK) ESP_LOGE(TAG, "level update failed: %d", r);
+    if (!p->force_off) {
+        // Must use the nullable variant — the non-nullable one is silently rejected with ESP_ERR_INVALID_ARG (258) because the cluster declares CurrentLevel nullable.
+        esp_matter_attr_val_t v = esp_matter_nullable_uint8(p->level);
+        esp_err_t r = attribute::update(p->ep, LevelControl::Id,
+                                        LevelControl::Attributes::CurrentLevel::Id, &v);
+        if (r != ESP_OK) ESP_LOGE(TAG, "level update failed: %d", r);
+    }
     if (p->also_on || p->force_off) {
         esp_matter_attr_val_t vo = esp_matter_bool(p->also_on);
-        r = attribute::update(p->ep, OnOff::Id, OnOff::Attributes::OnOff::Id, &vo);
+        esp_err_t r = attribute::update(p->ep, OnOff::Id, OnOff::Attributes::OnOff::Id, &vo);
         if (r != ESP_OK) ESP_LOGE(TAG, "onoff update failed: %d", r);
     }
     delete p;
@@ -268,32 +291,39 @@ extern "C" void matter_push_colortemp(uint16_t mireds) {
     }
 }
 
+// Runs on the core-1 FOC task (settle callback) — DEBUG log only, no blocking work.
 extern "C" void matter_push_level_from_angle(float angle_rad) {
     if (s_endpoint_id == 0) return;
     if (angle_rad < 0.0f) angle_rad = 0.0f;
     if (angle_rad > ANGLE_MAX) angle_rad = ANGLE_MAX;
 
-    // +0.5 rounding so a final knob click maps to 254 (else off-by-one shows 99% in Home).
-    int raw = (angle_rad >= ANGLE_MAX)
-                ? 254
-                : (int)((angle_rad / ANGLE_MAX) * 254.0f + 0.5f);
-    bool want_off = (angle_rad <= 0.0f);
-    int lv = raw;
-    if (lv < 1)   lv = 1;
-    if (lv > 254) lv = 254;
-    uint8_t new_level = (uint8_t)lv;
+    // Half-a-level-step epsilon: the settle angle lands within encoder/NVS-save
+    // noise of 0, so an exact <= 0 test made knob-to-zero a coin flip between
+    // "Off" and "On, 1%" in Home.
+    bool want_off = (angle_rad < 0.5f * ANGLE_MAX / 254.0f);
 
-    bool on_changed    = want_off ? s_on_off : !s_on_off;
-    bool level_changed = (new_level != s_level);
-    if (!on_changed && !level_changed) return;
+    bool also_on   = false;
+    bool force_off = false;
+    uint8_t new_level = s_level;
+    if (want_off) {
+        if (!s_on_off) return;     // already off; level untouched
+        s_on_off  = false;
+        force_off = true;
+    } else {
+        // +0.5 rounding so a final knob click maps to 254 (else off-by-one shows 99% in Home).
+        int lv = (angle_rad >= ANGLE_MAX)
+                   ? 254
+                   : (int)((angle_rad / ANGLE_MAX) * 254.0f + 0.5f);
+        if (lv < 1)   lv = 1;
+        if (lv > 254) lv = 254;
+        new_level = (uint8_t)lv;
+        also_on   = !s_on_off;
+        if (!also_on && new_level == s_level) return;
+        s_on_off = true;
+        s_level  = new_level;
+    }
 
-    bool also_on    = !want_off && !s_on_off;
-    bool force_off  =  want_off &&  s_on_off;
-    if (also_on)   s_on_off = true;
-    if (force_off) s_on_off = false;
-    s_level = new_level;
-
-    ESP_LOGI(TAG, "push: knob angle=%.2f -> level=%u%s",
+    ESP_LOGD(TAG, "push: knob angle=%.2f -> level=%u%s",
              angle_rad, (unsigned)new_level,
              also_on ? " +OnOff=true" : (force_off ? " +OnOff=false" : ""));
 
