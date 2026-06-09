@@ -76,7 +76,6 @@ pull-up** (do not add an external one).
 | D_USB | USBLC6-2SC6 (SOT23-6L) | ESD array on D+/D−/VBUS |
 | C_VBUS | 4.7–10 µF | VBUS bulk near J_USB |
 | D_OR_USB | SS14 Schottky | VBUS → common logic node (diode-OR) |
-| D_OR_5V  | SS14 Schottky | buck-3.3V-feed → common node (diode-OR) — see note |
 | C_DP/C_DM | DNP 10–47 pF | optional D± EMI caps (reserve, unpopulated) |
 | J_PROG | 6× **SMD test pads** (or SMD 1.27 mm header) (**fallback**) | 3V3, GND, EN, GPIO0, TXD0(43), RXD0(44) — UART recovery if USB ever fails. Bare pads = no part placed |
 
@@ -134,13 +133,17 @@ Single-stage synchronous buck, 4.5–36 V in, 3 A, SOT-23-6. FB Vref = 0.6 V.
 ### Input protection (24 V)
 | Ref | Value / Part | Purpose |
 |---|---|---|
-| F1 | 1.5–2 A slow-blow **SMD chip fuse, 1206** (≥63 V DC rating) | fault/fire protection |
+| F1 | 2 A **slow-blow NANO2 SMD fuse** (Littelfuse 0454002.MR, 6.1×2.7 mm; 125 V rating satisfies the ≥63 V DC need) | fault/fire protection |
 | Q1 | P-MOSFET ideal-diode, Vds ≥ 40 V, **SOT-23** (DMP3017SFG / AO3401A; DPAK if more current) | reverse-polarity, ~mV drop |
 | R_Q1 | 100 kΩ | Q1 gate pulldown |
-| D_Q1 | 12–15 V Zener gate→source (SOD-123) | clamp Vgs in reverse fault |
-| TVS1 | SMBJ30A (SMB, 30 V standoff, ~48 V clamp, 600 W) | 24 V transient clamp (below buck 40 V abs-max) |
+| D_Q1 | **10 V Zener** gate→**source** (SOD-123, BZT52C10) | clamp Vgs (AO3401A Vgs abs-max is ±12 V) |
+| TVS1 | SMBJ28A (SMB, 28 V standoff, VC 45.4 V at full Ipp, 600 W) | 24 V transient clamp — clamps small/typical surges (~35 V) below the buck's 40 V abs-max; at full rated surge VC exceeds it — accepted residual risk behind fuse + FET impedance |
 | C_IN_BULK | 47–100 µF / 50 V **SMD** Al-electrolytic (V-chip) or Al-polymer | surge ride-through / input bulk |
 
+> **Q1 orientation:** drain = fused **input** (`P24_F`), source = **load** (`P24`) — so the
+> body diode blocks a reversed input and the enhanced channel shorts it out in normal
+> polarity. `D_Q1` clamps gate-to-**source** (the load side).
+>
 > P-FET ideal-diode over a series Schottky: at ~150–300 mA total logic draw the
 > Schottky's ~0.4 V drop is wasted heat; the P-FET costs a few mV. Place F1 + Q1 + TVS
 > upstream of **all** 24 V loads (motor, LED, buck) so the whole board is protected;
@@ -154,8 +157,8 @@ Single-stage synchronous buck, 4.5–36 V in, 3 A, SOT-23-6. FB Vref = 0.6 V.
 | C_IN2 | 4.7 µF / 50 V X7R 1206 | splits input ripple, tightens hot-loop |
 | L1 | 4.7 µH, Isat ≥ 1.5 A, shielded (Würth 74438335047) | buck inductor |
 | C_OUT1, C_OUT2 | 22 µF / 10 V X7R | output caps (low ESR) |
-| R_FBT | 45.3 kΩ 1% 0402 | FB top (sets 3.318 V) |
-| R_FBB | 10 kΩ 1% 0402 | FB bottom |
+| R_FBT | 45.3 kΩ 1% 0603 | FB top (sets 3.318 V) |
+| R_FBB | 10 kΩ 1% 0603 | FB bottom |
 | C_BOOT_B | 100 nF / 16 V X7R (BOOT↔SW) | high-side gate drive |
 | C_FF | 22 pF (optional, across R_FBT) | feed-forward, transient/phase margin |
 | R_ENB | 100 kΩ (EN→VIN) | enable (do not float; EN is VIN-tolerant) |
@@ -238,7 +241,7 @@ landing on your own board instead of the XIAO.
 |---|---|---|
 | J_SENSOR | **5-pos screw terminal (THT)** | wires from the existing MT6701 module |
 | C_SENS | 0.1 µF 0402 (optional) | extra decoupling at the connector for the cable run |
-| R_AZ (×3) | 10 kΩ (DNP) | optional A/B/Z pull-up stiffening for a long/noisy cable |
+| R_AZ_A/B/C (×3) | 10 kΩ 0603 (DNP) | optional A/B/Z pull-up stiffening for a long/noisy cable |
 
 **Nets (connector only)**
 ```
@@ -314,7 +317,7 @@ build.
 **The board is all-SMD *except the off-board connectors*, which are through-hole** for
 mechanical strength (cable tension would peel SMD pads). Two connector families:
 
-- **Keyed JST-XH (2.54 mm pitch)** for the low-current UI/LED signals — polarized so a
+- **Keyed JST-XH (2.50 mm pitch)** for the low-current UI/LED signals — polarized so a
   connector can't go in backwards.
 - **Through-hole screw-terminal blocks** for the high-current / field-wired power, motor,
   and encoder lines.
@@ -324,9 +327,9 @@ mechanical strength (cable tension would peel SMD pads). Two connector families:
 | J_PWR | screw terminal (THT) | 2 | 24 V `V+`, `V−` |
 | J_MOTOR | screw terminal (THT) | 3 | `U`, `V`, `W` |
 | J_SENSOR (encoder) | screw terminal (THT) | 5 | `VCC`, `GND`, `A`, `B`, `Z` |
-| J_KNOB | JST-XH 2.54 mm (THT) | 3 | `ROT_A`, `ROT_B`, `GND` (common) |
-| J_BTN | JST-XH 2.54 mm (THT) | 2 | `BTN` (SW), `GND` |
-| J_LED | JST-XH 2.54 mm (THT) | 3 | `V+`, `W`, `C` |
+| J_KNOB | JST-XH 2.50 mm (THT) | 3 | `ROT_A`, `ROT_B`, `GND` (common) |
+| J_BTN | JST-XH 2.50 mm (THT) | 2 | `BTN` (SW), `GND` |
+| J_LED | JST-XH 2.50 mm (THT) | 3 | `V+`, `W`, `C` |
 | J_EXP | 1×10 male pin header (2.54 mm THT) | 10 | spare-GPIO breakout: 3V3, GND, IO1, IO2, IO13, IO38–42 |
 | J_USB | SMD USB-C receptacle (Block B) | — | dev/flash |
 | J_PROG | SMD test pads (Block B) | 6 | UART fallback — no part placed |
@@ -339,7 +342,7 @@ board edge per the layout plan. JST-XH mating shells: B3B-XH-A (3-pin) / B2B-XH-
 
 > **Assembly note:** these THT connectors are the board's only through-hole parts — either
 > add them to JLCPCB's through-hole assembly or hand-solder them after the SMT reflow
-> (six connectors, a few minutes). Everything else is SMD, one reflow pass.
+> (seven connectors, a few minutes). Everything else is SMD, one reflow pass.
 
 ---
 

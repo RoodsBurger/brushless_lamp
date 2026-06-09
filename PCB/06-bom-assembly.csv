@@ -1,4 +1,4 @@
-# PCBWay ASSEMBLY BOM - matches the 68 parts in fusion/BrushlessLamp.sch (authoritative).
+# PCBWay ASSEMBLY BOM - matches the 71 parts in fusion/BrushlessLamp.sch (authoritative).
 # Populate=No => DNP (do not place). Passives: PCBWay turnkey may substitute equivalents (match value/package/tolerance/voltage). Verify any LCSC# before ordering.
 # Hand this alongside the Fusion-exported Gerbers + Pick-and-Place(centroid). See 06-pcbway-assembly.md.
 RefDes,Qty,Value,Description,Package,Mount,MPN,Manufacturer,LCSC,Populate,Notes
@@ -9,10 +9,11 @@ D_USB,1,USBLC6-2SC6,USB ESD protection array,SOT-23-6,SMT,USBLC6-2SC6,STMicroele
 Q_WW;Q_CW,2,AO3400A,N-MOSFET LED low-side,SOT-23,SMT,AO3400A,Alpha & Omega,C20917,Yes,
 Q1,1,AO3401A,P-MOSFET reverse-protect,SOT-23,SMT,AO3401A,Alpha & Omega,C15127,Yes,
 D_OR_USB,1,SS14,Schottky 40V 1A,SMA,SMT,SS14,MDD/Diodes,C2480,Yes,VBUS diode-OR to buck input
-D_Q1,1,BZT52C15,Zener 15V 0.5W,SOD-123,SMT,BZT52C15,various,C4332,Yes,Q1 Vgs clamp; verify LCSC
-TVS1,1,SMBJ30A,TVS 30V unidirectional 600W,SMB,SMT,SMBJ30A,various,C13983,Yes,24V transient clamp
+D_Q1,1,BZT52C10,Zener 10V 0.5W,SOD-123,SMT,BZT52C10,various,C2687029,Yes,Q1 gate-to-source clamp (AO3401A Vgs abs-max +/-12V); verify LCSC
+TVS1,1,SMBJ28A,TVS 28V unidirectional 600W,SMB,SMT,SMBJ28A,various,,Yes,24V clamp - small/typical surges below buck 40V abs-max; full-surge VC 45.4V exceeds it (accepted residual risk); verify LCSC
 D_MCU,1,ESD 3.3V,TVS/ESD 3.3V working,SOD-323,SMT,CDSOD323-T03SC,Bourns,,Yes,generic 3V3 ESD; optional - may DNP
 D_CLW;D_CLC,2,clamp,LED drain TVS/Schottky,SOD-323,SMT,-,-,-,No,DNP - populate only if drain ringing >30V
+R_AZ_A;R_AZ_B;R_AZ_C,3,10k,encoder A/B/Z pull-up stiffening to 3V3,0603,SMT,0603WAF1002T5E,UNI-ROYAL,C25804,No,DNP - populate only for a long/noisy encoder cable
 LED_STATUS,1,Green LED,status indicator,0603,SMT,19-217/GHC-YR1S2/3T,Everlight,C72043,Yes,generic green 0603; optional
 R_EN;R_BOOT;R_NSLEEP;R_NRESET;R_NFAULT;R_EN_DRV;R_FBB,7,10k,thick-film 1%,0603,SMT,0603WAF1002T5E,UNI-ROYAL,C25804,Yes,pull-ups + buck FB bottom
 R_FBT,1,45.3k,thick-film 1%,0603,SMT,0603WAF4532T5E,UNI-ROYAL,,Yes,CRITICAL 1% - sets Vout=3.318V
@@ -25,7 +26,7 @@ C_MCU3;C_MCU4;C_BOOT_B;C_SENS,4,100nF,X7R 16V,0402,SMT,CL05B104KO5NNNC,Samsung,C
 C_BOOT,1,100pF,C0G 50V,0402,SMT,CL05C101JB5NNNC,Samsung,,Yes,GPIO0 debounce - MUST stay small (never ~0.1uF)
 C_FF,1,22pF,C0G 50V,0402,SMT,CL05C220JB5NNNC,Samsung,,Yes,buck feed-forward (optional)
 C_MCU2;C_EN,2,1uF,X7R 16V,0603,SMT,CL10B105KB8NNNC,Samsung,C15849,Yes,
-C_VBUS,1,4.7uF,X5R 10V,0603,SMT,CL10A475KO8NNNC,Samsung,C19666,Yes,VBUS bulk
+C_VBUS,1,4.7uF,X5R 16V,0603,SMT,CL10A475KO8NNNC,Samsung,C19666,Yes,VBUS bulk
 C_CP,1,10nF,50V X7R,0603,SMT,CL10B103KB8NNNC,Samsung,,Yes,charge-pump flying cap (VM-rated)
 C_VCP;C_VM1;C_VM2,3,100nF,50V X7R,0603,SMT,CL10B104KB8NNNC,Samsung,C1591,Yes,VCP + VM decoupling
 C_V3P3,1,470nF,16V X7R,0603,SMT,CL10A474KO8NNNC,Samsung,,Yes,DRV V3P3 bypass
@@ -37,7 +38,7 @@ C_MCU_BULK,1,470uF 6.3V,polymer/tantalum-polymer,7343 (D),SMT,T520D477M006ATE025
 C_IN_BULK;C_VM_BULK,2,100uF 50V,aluminium electrolytic SMD,8x10.5mm,SMT,EEE-FK1H101P,Panasonic,,Yes,*confirm CAP_V land (8mm can)
 L1,1,4.7uH,shielded power inductor >=1.5A,4x4mm,SMT,SWPA4030S4R7MT,Sunlord,,Yes,*confirm IND43 land; or Wurth 74438335047
 SW_RST;SW_BOOT,2,tactile,SMD pushbutton 4-pad,SMD,SMT,TS-1187A-B-A-B,XKB/various,C318884,Yes,*confirm TACT land
-F1,1,2A,fast chip fuse,1206,SMT,0466002.NR,Littelfuse,,Yes,confirm >=63VDC rating for 24V rail
+F1,1,2A,slow-blow NANO2 fuse,NANO2 6.1x2.7mm,SMT,0454002.MR,Littelfuse,,Yes,slo-blo; 125V rating satisfies >=63VDC need; verify FUSE_NANO2 land before fab
 J_USB,1,USB-C 16P,USB 2.0 receptacle,SMT,SMT,TYPE-C-31-M-12,HRO,C165948,Yes,native USB flash/console
 J_BTN,1,JST-XH 2P,header (mate XHP-2),THT 2.5mm,THT,B2B-XH-A,JST,C144395,Yes,button SW/GND
 J_KNOB;J_LED,2,JST-XH 3P,header (mate XHP-3),THT 2.5mm,THT,B3B-XH-A,JST,C158012,Yes,knob A/B/GND and LED V+/W/C

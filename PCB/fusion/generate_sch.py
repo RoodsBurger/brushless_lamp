@@ -9,10 +9,10 @@ land patterns with the correct pad-to-pin mapping. Pinouts verified from
 datasheets: WROOM-1, DRV8313 (HTSSOP-28), LMR51430 (SOT-23-6: 1GND 2SW 3VIN
 4FB 5EN 6CB), USBLC6-2SC6, AO3400 (SOT-23 1G 2S 3D).
 
-VERIFY-BEFORE-FAB (approximate land patterns -- replace with vendor footprints):
-  * WROOM1   (module pad ring is approximated; pad NUMBERS map correctly)
-  * USBC16   (depends on exact receptacle MPN)
-Everything else uses standard IPC-ish chip/discrete/connector land patterns.
+The WROOM-1 / USB-C / DRV8313 / USBLC6 / AO3400 parts use the official vendor
+.lbr footprints from ../components (see README.md) -- the generic WROOM1/USBC16
+devicesets below are dead code kept for reference only. Everything else uses
+standard IPC-ish chip/discrete/connector land patterns.
 
 Output: BrushlessLamp.sch  (Fusion: upload into an Electronics project).
 """
@@ -80,9 +80,9 @@ def usbc16():
     for nm,x,y in layout: p.append(smd(nm,x,y,0.6,1.0))
     p.append(thp("SH1",-4.4,0,1.0,2.0)); p.append(thp("SH2",4.4,0,1.0,2.0))
     return p
-def screw(npos,pitch):   # screw terminal: 1.2mm drill / 2.2mm pad (KF301 5.0mm, KF350 3.5mm)
+def screw(npos,pitch):   # screw terminal: 1.3mm drill / 2.2mm pad (KF301 5.0mm, KF350 3.5mm; ~1.0mm square pin = 1.4mm diagonal)
     x0=-(npos-1)/2*pitch
-    return [thp(str(i+1),x0+i*pitch,0,1.2,2.2,sq=(i==0)) for i in range(npos)]
+    return [thp(str(i+1),x0+i*pitch,0,1.3,2.2,sq=(i==0)) for i in range(npos)]
 def xh(npos,pitch=2.5):
     x0=-(npos-1)/2*pitch
     return [thp(str(i+1),x0+i*pitch,0,0.95,1.7,sq=(i==0)) for i in range(npos)]
@@ -99,6 +99,7 @@ def tact():  # 4-leg SMD tactile
 PKG = {
  "0402":two(0.51,0.59,0.64), "0603":two(0.80,0.90,0.95), "0805":two(0.95,1.00,1.45),
  "1206":two(1.48,1.15,1.80), "1210":two(1.48,1.15,2.65), "FUSE1206":two(1.48,1.15,1.80),
+ "FUSENANO2":two(2.60,2.60,2.40),  # Littelfuse NANO2 (6.1x2.7mm body) recommended land -- verify before fab
  "CAP_D":two(2.90,2.10,2.50), "CAP_V":two(1.80,1.20,3.40), "IND43":two(1.50,1.60,3.40),
  "SOD323":two(1.35,0.80,0.90,"C","A"), "SOD123":two(1.85,0.95,1.20,"C","A"),
  "SMA":two(2.30,1.50,1.65,"C","A"), "SMB":two(2.20,2.00,2.20,"C","A"),
@@ -121,6 +122,7 @@ DEVSETS = {
  "CAP_V":("CAP","CAP_V",{"1":"1","2":"2"},"C"),
  "IND_SMD":("IND","IND43",{"1":"1","2":"2"},"L"),
  "FUSE_1206":("FUSE","FUSE1206",{"1":"1","2":"2"},"F"),
+ "FUSE_NANO2":("FUSE","FUSENANO2",{"1":"1","2":"2"},"F"),
  "DIODE_SOD323":("DIODE","SOD323",{"A":"A","C":"C"},"D"),
  "DIODE_SOD123":("DIODE","SOD123",{"A":"A","C":"C"},"D"),
  "DIODE_SMA":("DIODE","SMA",{"A":"A","C":"C"},"D"),
@@ -215,11 +217,11 @@ PARTS = {
  "J_PROG": ("CONN_PROG_DS","UART-FALLBACK",{"3V3":"P3V3","GND":"GND","EN":"EN_RST",
     "IO0":"BOOT","TXD":"U0TXD","RXD":"U0RXD"}),
  "J_PWR": ("CONN_PWR_DS","24V-IN",{"VP":"P24_RAW","VN":"GND"}),
- "F1": ("FUSE_1206","2A",{"1":"P24_RAW","2":"P24_F"}),
- "Q1": ("FET_SOT23","PMOS-RevProt",{"S":"P24_F","D":"P24","G":"Q1G"}),
+ "F1": ("FUSE_NANO2","2A",{"1":"P24_RAW","2":"P24_F"}),
+ "Q1": ("FET_SOT23","PMOS-RevProt",{"D":"P24_F","S":"P24","G":"Q1G"}),   # D=fused input, S=load: body diode blocks reversed input, channel shorts it in normal polarity
  "R_Q1": ("RES_0603","100k",{"1":"Q1G","2":"GND"}),
- "D_Q1": ("DIODE_SOD123","15V-Zener",{"A":"Q1G","C":"P24_F"}),
- "TVS1": ("DIODE_SMB","SMBJ30A",{"A":"GND","C":"P24"}),
+ "D_Q1": ("DIODE_SOD123","10V-Zener",{"A":"Q1G","C":"P24"}),   # clamps Q1 gate-to-SOURCE (AO3401A Vgs abs-max ±12V)
+ "TVS1": ("DIODE_SMB","SMBJ28A",{"A":"GND","C":"P24"}),
  "C_IN_BULK": ("CAP_V","100u-50V",{"1":"P24","2":"GND"}),
  "U_BUCK": ("BUCK_DS","LMR51430",{"VIN":"P24","GND":"GND","EN":"BUCK_EN","FB":"FB",
     "SW":"SW","BST":"BST"}),
@@ -246,6 +248,10 @@ PARTS = {
  "J_MOTOR": ("CONN_MOTOR_DS","MOTOR",{"U":"MOT_U","V":"MOT_V","W":"MOT_W"}),
  "J_SENSOR": ("CONN_SENSOR_DS","MT6701",{"VCC":"P3V3","GND":"GND","A":"ENCA","B":"ENCB","Z":"ENCZ"}),
  "C_SENS": ("CAP_0402","100n",{"1":"P3V3","2":"GND"}),
+ # optional encoder A/B/Z pull-up stiffening for a long/noisy cable -- DNP by default
+ "R_AZ_A": ("RES_0603","10k-DNP",{"1":"P3V3","2":"ENCA"}),
+ "R_AZ_B": ("RES_0603","10k-DNP",{"1":"P3V3","2":"ENCB"}),
+ "R_AZ_C": ("RES_0603","10k-DNP",{"1":"P3V3","2":"ENCZ"}),
  "J_LED": ("CONN_LED_DS","CCT-STRIP",{"VP":"P24","W":"LEDW_D","C":"LEDC_D"}),
  "R_GW": ("RES_0603","33R",{"1":"GW_G","2":"LEDWW"}),
  "R_GC": ("RES_0603","33R",{"1":"CW_G","2":"LEDCW"}),

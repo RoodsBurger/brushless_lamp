@@ -62,7 +62,7 @@ the WROOM-1 carries its own RF ground internally so no inner plane is needed.
 ## BOM — ready: [`06-bom-assembly.csv`](06-bom-assembly.csv)
 
 **The assembly-ready BOM is done** — [`06-bom-assembly.csv`](06-bom-assembly.csv) is
-reconciled 1:1 against the 68 parts in the schematic, with a concrete MPN per line
+reconciled 1:1 against the 71 parts in the schematic, with a concrete MPN per line
 (including the 4 part-specific picks), `Populate` flags (DNP = `D_CLW/D_CLC`, `J_PROG`),
 and LCSC numbers where confirmed. Hand that file to PCBWay alongside the Gerbers +
 centroid. Before ordering, just: (a) verify the few LCSC# marked "verify", and (b)
@@ -92,8 +92,8 @@ Every line has:
 
 ### Passives / discretes
 Turnkey-OK as generic specs (PCBWay/LCSC house parts), e.g. `R_* = 0603, value, 1%`;
-`C_* = 0603/0805/0402, value, X7R/C0G, ≥ rated V`; `D_Q1 = BZT52C15` (SOD-123);
-`TVS1 = SMBJ30A` (SMB); `D_OR_USB = SS14` (SMA); `Q1 = AO3401A` or similar P-FET (SOT-23).
+`C_* = 0603/0805/0402, value, X7R/C0G, ≥ rated V`; `D_Q1 = BZT52C10` (SOD-123);
+`TVS1 = SMBJ28A` (SMB); `D_OR_USB = SS14` (SMA); `Q1 = AO3401A` or similar P-FET (SOT-23).
 Give the value+package and let them source, or pin exact LCSC numbers from
 `03-bom-mainboard.csv`.
 
@@ -107,7 +107,8 @@ Per [`fusion/FOOTPRINTS.md`](fusion/FOOTPRINTS.md):
 
 ### DNP (do not populate)
 Mark these so PCBWay skips them: `C_DP`, `C_DM` (USB EMI caps, reserved), `D_CLW`, `D_CLC`
-(LED drain clamps), and `J_PROG` (bare fallback pads — no part). `C_BOOT` / `C_FF` are
+(LED drain clamps), `R_AZ_A`/`R_AZ_B`/`R_AZ_C` (encoder pull-up stiffening, populate only
+for a long/noisy cable), and `J_PROG` (bare fallback pads — no part). `C_BOOT` / `C_FF` are
 optional — populate or DNP as you choose.
 
 ## PCBWay assembly form — values
@@ -117,10 +118,10 @@ For the "Other Parameters" count fields (optional; the uploaded BOM is authorita
 | Field | Value |
 |---|---|
 | Number of Unique Parts | **42** (distinct kinds placed) |
-| Number of SMD Parts | **58** |
+| Number of SMD Parts | **61** |
 | Number of BGA/QFP Parts | **0** (DRV8313 = HTSSOP, WROOM-1 = module) |
 | Number of Through-Hole Parts | **7** (`J_PWR/J_MOTOR/J_SENSOR/J_KNOB/J_BTN/J_LED` + `J_EXP`) |
-| Total placed | 65 (DNP: `D_CLW`, `D_CLC`, `J_PROG`) |
+| Total placed | 65 (DNP: `D_CLW`, `D_CLC`, `R_AZ_A/B/C`, `J_PROG`) |
 
 Form choices: **Turnkey**, **Single pieces** (re-check vs panel after layout if a board
 side < 50 mm), **Top side** (all SMD on top; THT assembled separately), sensitive
@@ -136,7 +137,7 @@ components = **No** (WROOM-1 is MSL-3 but handled routinely), China substitutes 
 - **2-layer, 1.6 mm, no controlled impedance** — RF is inside the WROOM-1 module and USB
   is full-speed, so no impedance control needed. Just respect the WROOM-1 antenna keep-out
   (already in the module footprint) and keep a solid bottom ground pour.
-- **THT parts:** the 6 connectors (screw terminals, JST-XH, header) are through-hole —
+- **THT parts:** the 7 connectors (screw terminals, JST-XH, header) are through-hole —
   confirm PCBWay's quote includes THT hand-assembly for them (a small surcharge vs the
   all-SMT parts).
 

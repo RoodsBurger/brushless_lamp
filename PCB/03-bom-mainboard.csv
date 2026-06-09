@@ -1,5 +1,5 @@
-# NOTE: This is the original DESIGN-REFERENCE BOM (with rationale). For ordering/assembly use 06-bom-assembly.csv, which is reconciled 1:1 with the schematic (68 parts incl. J_EXP spare-GPIO header) and is AUTHORITATIVE. This file may list reserved/optional parts (e.g. C_DP/C_DM) not present on the generated board.
-# ALL-SMD board EXCEPT the off-board connectors, which are through-hole (keyed JST-XH 2.54mm for button/knob/LED; screw terminals for power/motor/encoder). All actives/passives are SMD = single SMT reflow; THT connectors via JLCPCB THT assembly or hand-soldered. See 02-schematic-blocks.md Block G.
+# NOTE: This is the original DESIGN-REFERENCE BOM (with rationale). For ordering/assembly use 06-bom-assembly.csv, which is reconciled 1:1 with the schematic (71 parts incl. J_EXP spare-GPIO header) and is AUTHORITATIVE. This file may list reserved/optional parts (e.g. C_DP/C_DM) not present on the generated board.
+# ALL-SMD board EXCEPT the off-board connectors, which are through-hole (keyed JST-XH 2.5mm for button/knob/LED; screw terminals for power/motor/encoder). All actives/passives are SMD = single SMT reflow; THT connectors via JLCPCB THT assembly or hand-soldered. See 02-schematic-blocks.md Block G.
 Block,RefDes,Qty,Value,Part / MPN,Package (SMD),LCSC,Notes
 MCU,U_MCU,1,ESP32-S3-WROOM-1-N8R8,ESP32-S3-WROOM-1-N8R8,Module (SMD castellated/LGA),C2913202,Exact XIAO ESP32-S3R8 silicon; use -1U for ext antenna
 MCU,C_MCU1,1,10uF,GRM21BR61E106KA,0805,C13585,3V3 bulk at module entrance
@@ -12,7 +12,7 @@ MCU,C_EN,1,1uF,CL10B105KB8NNN,0603,C15849,EN RC / reset debounce
 MCU,SW_RST,1,-,SMD tactile switch (e.g. 3x4 or 3x6 mm),SMD,C318884,RESET (EN->GND) - SMD tactile
 MCU,R_BOOT,1,10k,0603WAF1002,0603,C25804,GPIO0 pull-up
 MCU,SW_BOOT,1,-,SMD tactile switch (e.g. 3x4 or 3x6 mm),SMD,C318884,BOOT (GPIO0->GND) - SMD tactile
-MCU,C_BOOT,1,0.1uF (opt),CL05B104KO5NNN,0402,C1525,GPIO0 debounce - keep small / optional
+MCU,C_BOOT,1,100pF C0G 50V,CL05C101JB5NNNC,0402,,GPIO0 strap - MUST stay small (never ~0.1uF)
 USB,J_USB,1,USB-C 16P,TYPE-C-31-M-12 / GCT USB4085,SMD (SMT receptacle),C165948,USB 2.0 receptacle (power+data); SMD with board-edge tabs
 USB,R_CC1,1,5.1k,0603WAF5101,0603,C23186,CC1 pull-down (Rd)
 USB,R_CC2,1,5.1k,0603WAF5101,0603,C23186,CC2 pull-down (Rd) - separate resistor
@@ -23,19 +23,19 @@ USB,C_VBUS,1,4.7uF,CL10A475KO8NNN,0603,C19666,VBUS bulk near connector
 USB,D_OR_USB,1,SS14,SS14,SMA (DO-214AC),C2480,VBUS diode-OR (optional USB-only bring-up)
 USB,C_DP/C_DM,2,DNP 10-47pF,-,0402,,Optional D+/D- EMI caps - leave unpopulated
 USB,J_PROG,1,6 net,SMD pads (or SMD 1.27mm header),SMD test pads,,"Fallback UART prog: 3V3/GND/EN/GPIO0/U0TXD(43)/U0RXD(44) - bare SMD pads, no part placed unless needed"
-PWR-PROT,F1,1,2A,SMD chip fuse >=63V rating,1206,,Input fault/fire protection - SMD chip fuse (verify 63V DC rating for 24V rail)
+PWR-PROT,F1,1,2A slow-blow,Littelfuse 0454002.MR (NANO2 slo-blo),NANO2 6.1x2.7mm,,Input fault/fire protection - slow-blow NANO2; 125V rating satisfies >=63V DC need
 PWR-PROT,Q1,1,P-MOSFET >=40V,DMP3017SFG / AO3401A / equiv,SOT-23 (SMD; DPAK if higher I),,Reverse-polarity ideal diode
 PWR-PROT,R_Q1,1,100k,0603WAF1003,0603,C25803,Q1 gate pulldown
-PWR-PROT,D_Q1,1,12-15V Zener,BZT52C15 / equiv,SOD-123,,Clamp Vgs in reverse fault
-PWR-PROT,TVS1,1,SMBJ30A,SMBJ30A,SMB (DO-214AA),C13983,24V transient clamp (~48V clamp)
+PWR-PROT,D_Q1,1,10V Zener,BZT52C10 / equiv,SOD-123,C2687029,Clamp Q1 Vgs gate-to-source (AO3401A Vgs abs-max +/-12V); verify LCSC
+PWR-PROT,TVS1,1,SMBJ28A,SMBJ28A,SMB (DO-214AA),,24V transient clamp - clamps small/typical surges below buck 40V abs-max; at full rated surge VC 45.4V exceeds it (accepted residual risk behind fuse + FET impedance)
 PWR-PROT,C_IN_BULK,1,47-100uF 50V,SMD Al-electrolytic (V-chip) or Al-polymer,SMD (e.g. 8x10mm V-chip),,Input surge ride-through - SMD can only
 PWR-BUCK,U_BUCK,1,LMR51430YDDCR,LMR51430YDDCR,SOT-23-6,C5210749,24V->3.3V synchronous buck (4.5-36V,3A)
 PWR-BUCK,C_IN1,1,10uF 50V,CL32B106KBJNNN,1210,C46653,Buck input HF decoupling (derated)
 PWR-BUCK,C_IN2,1,4.7uF 50V,CL31B475KCHNNN,1206,,Splits input ripple
 PWR-BUCK,L1,1,4.7uH,74438335047 (Wurth),SMD shielded,,Buck inductor Isat>=1.5A
 PWR-BUCK,C_OUT1/2,2,22uF 10V,CL21A226KOQNNN,0805,C45783,Buck output caps low-ESR
-PWR-BUCK,R_FBT,1,45.3k 1%,0402WGF4532,0402,,FB top -> 3.318V
-PWR-BUCK,R_FBB,1,10k 1%,0402WGF1002,0402,C60490,FB bottom
+PWR-BUCK,R_FBT,1,45.3k 1%,0603WAF4532T5E,0603,,FB top -> 3.318V
+PWR-BUCK,R_FBB,1,10k 1%,0603WAF1002T5E,0603,C25804,FB bottom
 PWR-BUCK,C_BOOT_B,1,100nF 16V,CL05B104KO5NNN,0402,C1525,BOOT-SW high-side drive
 PWR-BUCK,C_FF,1,22pF (opt),0402 C0G,0402,,Feed-forward across R_FBT
 PWR-BUCK,R_ENB,1,100k,0603WAF1003,0603,C25803,Buck EN to VIN
@@ -56,8 +56,9 @@ LED,D_CLW/D_CLC,2,TVS/Schottky (DNP),-,SOD-323,,Drain clamp - DNP unless ringing
 CONN,J_PWR,1,24V in,Screw terminal block 2P,THT (5.0/3.5mm pitch),,Mean Well V+/V-
 CONN,J_MOTOR,1,3-phase,Screw terminal block 3P,THT (5.0/3.5mm pitch),,Motor U/V/W
 CONN,J_SENSOR,1,MT6701,Screw terminal block 5P,THT (3.5mm pitch),,Encoder VCC/GND/A/B/Z (confirmed order) to bundled module (Z->GPIO14)
-CONN,J_KNOB,1,knob rotary,JST-XH 3P (B3B-XH-A),THT 2.54mm,C158012,Rotary side: ROT_A/ROT_B/GND(common)
-CONN,J_BTN,1,knob button,JST-XH 2P (B2B-XH-A),THT 2.54mm,C144395,Push-button side: BTN(SW)/GND
-CONN,J_LED,1,CCT strip,JST-XH 3P (B3B-XH-A),THT 2.54mm,C158012,V+/W/C
+CONN,R_AZ_A/B/C,3,10k (DNP),0603WAF1002T5E,0603,C25804,Optional encoder A/B/Z pull-up stiffening to 3V3 - DNP (populate only for long/noisy cable)
+CONN,J_KNOB,1,knob rotary,JST-XH 3P (B3B-XH-A),THT 2.5mm,C158012,Rotary side: ROT_A/ROT_B/GND(common)
+CONN,J_BTN,1,knob button,JST-XH 2P (B2B-XH-A),THT 2.5mm,C144395,Push-button side: BTN(SW)/GND
+CONN,J_LED,1,CCT strip,JST-XH 3P (B3B-XH-A),THT 2.5mm,C158012,V+/W/C
 MISC,LED_STATUS,1,green (opt),0603 LED,0603,,Optional status LED on GPIO21
 MISC,R_STATUS,1,1k (opt),0603,0603,C21190,Status LED series

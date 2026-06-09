@@ -81,10 +81,11 @@ Fusion design.
   at 6 mil).
 - **All-SMD board, through-hole connectors.** Every active/passive (passives, ICs, SOT-23
   MOSFETs, SMD tactile programming buttons) is surface-mount → **one SMT reflow pass**. The
-  six off-board connectors are the only through-hole parts: keyed **JST-XH**
-  (`J_KNOB` / `J_BTN` / `J_LED`) and screw terminals (`J_PWR` / `J_MOTOR` / `J_SENSOR`),
-  chosen THT for mechanical strength. Add them to **JLCPCB's through-hole assembly** (extra
-  process step / cost) **or hand-solder** the six after SMT reflow. Keep all SMD parts on
+  seven off-board connectors are the only through-hole parts: keyed **JST-XH**
+  (`J_KNOB` / `J_BTN` / `J_LED`), screw terminals (`J_PWR` / `J_MOTOR` / `J_SENSOR`), and
+  the `J_EXP` spare-GPIO pin header, chosen THT for mechanical strength. Add them to
+  **JLCPCB's through-hole assembly** (extra
+  process step / cost) **or hand-solder** the seven after SMT reflow. Keep all SMD parts on
   the top side to avoid a second-side reflow charge.
 - **Assembly (LCSC parts):** prefer **Basic/Preferred** parts for passives + AO3400A
   (C20917) + common SOT-23 to avoid feeder fees; **Extended** parts (DRV8313 C92482,

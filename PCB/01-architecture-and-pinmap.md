@@ -11,7 +11,7 @@
               │                         │                                │
    [Q1 P-FET reverse-protect]           │                                │
               │                         │                                │
-   [TVS SMBJ30A] [Cbulk 47–100 µF]      │                                │
+   [TVS SMBJ28A] [Cbulk 47–100 µF]      │                                │
               │                         │                                │
         24 V (protected)                │                                │
         ├──────────────► DRV8313 VM ────┴──► OUT1/2/3 ─► 3-phase motor    │
@@ -60,7 +60,7 @@ the main board can't meet anyway, and the breakout already solves that mechanica
 ## 3. Power tree
 
 ```
-24 V ─► F1 (1.5–2 A) ─► Q1 P-FET ideal-diode (reverse-polarity) ─► TVS SMBJ30A ─► protected 24 V
+24 V ─► F1 (1.5–2 A) ─► Q1 P-FET ideal-diode (reverse-polarity) ─► TVS SMBJ28A ─► protected 24 V
   protected 24 V ─► DRV8313 VM            (motor, up to ~0.5 A limited)
   protected 24 V ─► LED strip V+          (two channels, low-side switched)
   protected 24 V ─► LMR51430 buck ─► 3.3 V @ up to 3 A ─► ESP32-S3 + all logic + sensor VDD
@@ -90,8 +90,8 @@ Reserved / avoid on WROOM-1-N8R8: `0` (BOOT), `3/45/46` (strapping), `19/20` (US
 
 | Firmware signal | Proposed GPIO | Peripheral | Notes |
 |---|---:|---|---|
-| `PIN_PWM_A`  (DRV IN1) | 4  | MCPWM | phase A |
-| `PIN_PWM_B`  (DRV IN2) | 5  | MCPWM | phase B (swap A/B in firmware to set rotor direction, as today) |
+| `PIN_PWM_A`  (DRV IN2) | 5  | MCPWM | phase A — swapped with B vs IN1/IN2 to invert rotor direction, as today |
+| `PIN_PWM_B`  (DRV IN1) | 4  | MCPWM | phase B — swapped with A vs IN1/IN2 to invert rotor direction |
 | `PIN_PWM_C`  (DRV IN3) | 6  | MCPWM | phase C |
 | `PIN_NSP`    (nSLEEP)  | 7  | GPIO out | pulse low ≥30 µs to clear OCP/TSD; external 10 k pull-up |
 | `PIN_DRV_EN` (EN1/2/3) | 15 | GPIO out | **now software-controlled**; external pull-up + 0 Ω-to-3V3 option |
@@ -143,8 +143,8 @@ and leave bare pads. If you ever need more, IO47/IO48 are also free.
 ```c
 #elif defined(BRUSHLESSLAMP_BOARD_CUSTOM)   // custom ESP32-S3-WROOM-1 board
 
-constexpr uint8_t PIN_PWM_A        = 4;   // DRV8313 IN1
-constexpr uint8_t PIN_PWM_B        = 5;   // DRV8313 IN2  (A/B swapped in code to set direction)
+constexpr uint8_t PIN_PWM_A        = 5;   // DRV8313 IN2 — swapped with B to invert rotor direction
+constexpr uint8_t PIN_PWM_B        = 4;   // DRV8313 IN1 — swapped with A to invert rotor direction
 constexpr uint8_t PIN_PWM_C        = 6;   // DRV8313 IN3
 constexpr uint8_t PIN_NSP          = 7;   // DRV8313 nSLEEP
 constexpr int     PIN_DRV_EN       = 15;  // DRV8313 EN1/2/3 (software-controlled)
@@ -176,18 +176,18 @@ headers for the UI/LED signals, screw terminals for power/motor/encoder).
 | J_PWR (24 V in) | screw terminal | 2 (V+, V−) | Mean Well LRS-75-24 |
 | J_MOTOR | screw terminal | 3 (U, V, W) | BLDC phases |
 | J_SENSOR (encoder) | screw terminal | 5 — **VCC, GND, A, B, Z** (confirmed) | MT6701 module; Z → spare GPIO14 |
-| J_KNOB | JST-XH (2.54 mm) | 3 (ROT_A, ROT_B, GND) | rotary side of the knob |
-| J_BTN | JST-XH (2.54 mm) | 2 (BTN, GND) | push-button side of the knob |
-| J_LED | JST-XH (2.54 mm) | 3 (V+, W, C) | CCT strip |
+| J_KNOB | JST-XH (2.50 mm) | 3 (ROT_A, ROT_B, GND) | rotary side of the knob |
+| J_BTN | JST-XH (2.50 mm) | 2 (BTN, GND) | push-button side of the knob |
+| J_LED | JST-XH (2.50 mm) | 3 (V+, W, C) | CCT strip |
 | J_EXP | 1×10 male pin header (2.54 mm) | 10 (3V3, GND, 8 spare GPIO) | future expansion / optional JTAG |
 | J_USB | SMD USB-C | — | dev/flash |
 
 > **All-SMD board, through-hole connectors.** Every active/passive — including the AO3400A
 > LED switches (SOT-23, replacing the breadboard's through-hole MOSFETs) — is surface-mount
-> for a single SMT reflow. The six off-board connectors are deliberately **through-hole**
-> for mechanical strength: **keyed JST-XH** (button/knob/LED) and screw terminals
-> (power/motor/encoder). They're either added to JLCPCB's THT assembly or hand-soldered
-> after reflow.
+> for a single SMT reflow. The seven off-board connectors are deliberately **through-hole**
+> for mechanical strength: **keyed JST-XH** (button/knob/LED), screw terminals
+> (power/motor/encoder), and the `J_EXP` spare-GPIO pin header. They're either added to
+> JLCPCB's THT assembly or hand-soldered after reflow.
 
 ### Confirmed target motor + encoder (the unit on hand)
 

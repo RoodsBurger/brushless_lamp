@@ -40,7 +40,7 @@ The board is designed in **Autodesk Fusion (Electronics / former Eagle)**.
    step-by-step plan: milestones, what to do in what order, and the risks to retire
    early.
 6. **[`fusion/`](fusion/)** — a ready-to-open **EAGLE 9.x `.sch`** (`BrushlessLamp.sch`)
-   with all 68 parts, the full netlist wired, and a footprint on every part. The six key
+   with all 71 parts, the full netlist wired, and a footprint on every part. The six key
    parts (WROOM-1, DRV8313, USB-C, USBLC6, 2× AO3400) use the **official vendor symbols +
    footprints** from [`components/`](components) (downloaded SnapMagic `.lbr`); the rest
    use standard footprints. Plus the generator script and an import guide. See
@@ -54,7 +54,7 @@ The board is designed in **Autodesk Fusion (Electronics / former Eagle)**.
 
 8. **[`06-pcbway-assembly.md`](06-pcbway-assembly.md)** + **[`06-bom-assembly.csv`](06-bom-assembly.csv)**
    — what PCBWay (or any PCBA house) needs to fabricate + assemble: Gerbers + centroid
-   (auto-generated from your layout) and a finished **assembly BOM** (68 lines, MPN per
+   (auto-generated from your layout) and a finished **assembly BOM** (71 parts, MPN per
    part, DNP marked, reconciled to the schematic). Footprint dimensions are in
    [`fusion/FOOTPRINTS.md`](fusion/FOOTPRINTS.md).
 
@@ -97,8 +97,9 @@ The board is designed in **Autodesk Fusion (Electronics / former Eagle)**.
 6. **All-SMD board, through-hole connectors.** Every active/passive — including the
    AO3400A LED switches (SOT-23, replacing the breadboard's through-hole MOSFETs) — is
    surface-mount for a single SMT reflow. The off-board **connectors are deliberately
-   through-hole** for strength: keyed **JST-XH** for button / knob / LED, and
-   screw terminals for power / motor / encoder. They're added to JLCPCB's THT assembly or
+   through-hole** for strength: keyed **JST-XH** for button / knob / LED,
+   screw terminals for power / motor / encoder, and the `J_EXP` spare-GPIO pin header —
+   seven THT parts in total. They're added to JLCPCB's THT assembly or
    hand-soldered after reflow.
 
 ## Programming / flashing the ESP32

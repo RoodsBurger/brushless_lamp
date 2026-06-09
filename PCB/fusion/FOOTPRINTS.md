@@ -36,11 +36,11 @@ on the X axis (pad-to-pad). Values are IPC-7351B density-B (nominal / reflow).
 | 0805 | 10 µF, 22 µF caps | 1.00 | 1.45 | 0.95 | IPC nominal |
 | 1206 | 4.7 µF/50 V cap | 1.15 | 1.80 | 1.48 | IPC nominal |
 | 1210 | 10 µF/50 V cap | 1.15 | 2.65 | 1.48 | IPC nominal |
-| FUSE1206 | `F1` chip fuse | 1.15 | 1.80 | 1.48 | = 1206 |
+| FUSE_NANO2 | `F1` NANO2 fuse (0454002.MR) | 2.60 | 2.40 | 2.60 | Littelfuse-recommended NANO2 land (6.1×2.7 mm body) — **verify against the 0454 datasheet before fab** |
 | SOD-323 | ESD, clamp diodes | 0.80 | 0.90 | 1.35 | polarity pads C/A |
 | SOD-123 | zener `D_Q1` | 0.95 | 1.20 | 1.85 | polarity pads C/A |
 | SMA (DO-214AC) | `D_OR_USB` SS14 | 1.50 | 1.65 | 2.30 | polarity pads C/A |
-| SMB (DO-214AA) | `TVS1` SMBJ30A | 2.00 | 2.20 | 2.20 | polarity pads C/A |
+| SMB (DO-214AA) | `TVS1` SMBJ28A | 2.00 | 2.20 | 2.20 | polarity pads C/A |
 | LED0603 | `LED_STATUS` | 0.90 | 0.95 | 0.80 | = 0603, pads C/A |
 
 Three-/multi-lead and THT packages:
@@ -49,9 +49,9 @@ Three-/multi-lead and THT packages:
 |---|---|---|
 | SOT-23 | `Q1` P-FET | 0.95 mm pitch; pads 0.9 × 1.0; pin1(−0.95,−1.0) pin2(0.95,−1.0) pin3(0,1.0) |
 | SOT-23-6 | `U_BUCK` LMR51430 | 0.95 mm pitch; pads 0.6 × 1.0; two rows at y = ±1.1 |
-| SCREW2 | `J_PWR` | 5.0 mm pitch THT; 1.2 mm drill / 2.2 mm pad; 2 pos |
-| SCREW3 | `J_MOTOR` | 5.0 mm pitch THT; 1.2 mm drill / 2.2 mm pad; 3 pos |
-| SCREW5 | `J_SENSOR` | 3.5 mm pitch THT; 1.2 mm drill / 2.2 mm pad; 5 pos |
+| SCREW2 | `J_PWR` | 5.0 mm pitch THT; 1.3 mm drill / 2.2 mm pad; 2 pos (KF301 pins ~1.0 mm square = 1.4 mm diagonal) |
+| SCREW3 | `J_MOTOR` | 5.0 mm pitch THT; 1.3 mm drill / 2.2 mm pad; 3 pos |
+| SCREW5 | `J_SENSOR` | 3.5 mm pitch THT; 1.3 mm drill / 2.2 mm pad; 5 pos |
 | XH2 | `J_BTN` | JST-XH 2.5 mm pitch THT; 0.95 mm drill / 1.7 mm pad; 2 pin |
 | XH3 | `J_KNOB`, `J_LED` | JST-XH 2.5 mm pitch THT; 0.95 mm drill / 1.7 mm pad; 3 pin |
 | HDR6 | `J_PROG` | 2.54 mm pitch THT header; 0.9 mm drill / 1.6 mm pad; 6 pin |

@@ -24,15 +24,15 @@ The order to actually do this in, with the risks to retire early.
       AO3400A (SnapEDA/UltraLibrarian/SamacSys).
 - [ ] Author/verify the **MT6701QT-STD** symbol + QFN-16 footprint (likely custom).
 - [ ] Cross-check every footprint against the datasheet (pad 1, thermal pad, pin pitch).
-- [ ] **SMD for everything except the 6 connectors** — verify no stray THT part (buttons =
-      SMD tactile; fuse = 1206 chip; bulk caps = SMD polymer/V-chip, not radial cans). The
+- [ ] **SMD for everything except the 7 connectors** — verify no stray THT part (buttons =
+      SMD tactile; fuse = NANO2 SMD; bulk caps = SMD polymer/V-chip, not radial cans). The
       only THT footprints allowed: `J_PWR`/`J_MOTOR`/`J_SENSOR` (screw terminals) +
-      `J_KNOB`/`J_BTN`/`J_LED` (JST-XH 2.54 mm).
+      `J_KNOB`/`J_BTN`/`J_LED` (JST-XH 2.50 mm) + `J_EXP` (2.54 mm pin header).
 
 ## Phase 2 — Schematic capture (Fusion Electronics)
 
 - [x] **Draft schematic already generated** — [`fusion/BrushlessLamp.sch`](fusion/BrushlessLamp.sch)
-      has all 68 parts + the full netlist wired (named nets). Upload it into a Fusion
+      has all 71 parts + the full netlist wired (named nets). Upload it into a Fusion
       Electronics project as the starting point instead of capturing from scratch.
 - [ ] In Fusion, **assign real symbols/footprints** to each part (REPLACE the generic
       no-package devices with library parts; net connections carry over by name). Big
@@ -93,7 +93,7 @@ The order to actually do this in, with the risks to retire early.
 | `J_SENSOR` pinout mismatched to breakout | encoder won't plug in / miswired | RESOLVED — pad order confirmed `VCC·GND·A·B·Z`; wire the 5-pin connector to match 1:1 |
 | LMR51430 FB/inductor values from secondary sources | wrong Vout / instability | verify against official TI PDF before tape-out (flagged in [`02`](02-schematic-blocks.md)) |
 | RF performance on custom board | weak WiFi/BLE range | module + continuous GND plane + antenna keep-out; don't go chip-down |
-| 24 V transient kills buck | dead board | SMBJ30A TVS + 50 V-rated input caps + 36 V buck |
+| 24 V transient kills buck | dead board | SMBJ28A TVS + 50 V-rated input caps + 36 V buck |
 | Back-feed when USB + 24 V both present | PC port / board damage | VBUS stays local; diode-OR or power-path |
 | GPIO35/36/37 used by mistake | boot/PSRAM faults | marked NO-CONNECT in [`02`](02-schematic-blocks.md) |
 | Strapping pins held wrong at boot | won't boot / stuck in download | GPIO0 pull-up only, GPIO45/46 low, no large cap on GPIO0 |
