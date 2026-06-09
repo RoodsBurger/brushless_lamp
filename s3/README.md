@@ -29,8 +29,8 @@ regression-isolating a future change to the motor or knob layer; see
 ## 1. Product overview
 
 - **Physical action**: a 4015 gimbal motor rotates a hollow-shaft core
-  vertically through 100 motor-revolutions of travel. At rest-position 0 the
-  core is fully retracted, LEDs dark. At `ANGLE_MAX` (`100 × 2π rad`) the
+  vertically through 77 motor-revolutions of travel. At rest-position 0 the
+  core is fully retracted, LEDs dark. At `ANGLE_MAX` (`77 × 2π rad`) the
   core is fully raised and the LEDs are at `max_duty × gamma(2.2)`.
 - **LEDs follow the motor, not the slider**: brightness is a continuous
   function of `shaft_angle`, not of Matter Level. Moving the Matter slider
@@ -41,7 +41,8 @@ regression-isolating a future change to the motor or knob layer; see
   the driver cuts PWM entirely (250 ms idle debounce) — no holding torque,
   no audible hum.
 - **Stall-aware**: block the shaft with a finger and the motor gives up
-  after 1.2 s, accepts the physical position as the new target, and pushes
+  after ~0.6 s (400 ms warm-up + 150 ms sustained-stall window), accepts
+  the physical position as the new target, and pushes
   the corresponding level back to Matter so the Home app slider snaps to
   reality.
 - **Per-device Matter identity**: each unit is provisioned with a unique
@@ -97,7 +98,8 @@ regression-isolating a future change to the motor or knob layer; see
 SimpleFOC Mini ── U / V / W ─── 3-phase motor
                 │
                 └── nSLEEP → XIAO D7 (GPIO 44; UART0 RX strap — harmless at boot)
-                └── IN1/IN2/IN3 → XIAO D10 / D9 / D8 (MCPWM-capable, phase C/B/A)
+                └── IN1/IN2/IN3 → XIAO D10 / D9 / D8 (GPIO 9 / 8 / 7, MCPWM-capable,
+                                  phase B/A/C — A/B swapped in code to invert rotor direction)
 
 MT6701 A/B ──── XIAO D0 / D1 (GPIO 1 / 2)
 
@@ -105,11 +107,11 @@ rotary encoder A/B/SW ─── XIAO D2 / D3 / D4 (GPIO 3 / 4 / 5)
                                           ^ GPIO 3 is the JTAG-select strap;
                                             internal pull-up at boot is fine.
 
-LED WW gate ─── XIAO D5 (GPIO 6)  ── AO3400 ── WW cathode (strip)
-LED CW gate ─── XIAO D6 (GPIO 43) ── AO3400 ── CW cathode (strip)
+LED CW gate ─── XIAO D5 (GPIO 6)  ── AO3400 ── CW cathode (strip)
+LED WW gate ─── XIAO D6 (GPIO 43) ── AO3400 ── WW cathode (strip)
                                           ^ GPIO 43 is UART0 TX — prints a
                                             short ROM banner at power-up,
-                                            visible as a flicker on CW.
+                                            visible as a flicker on WW.
 ```
 
 `EN` on the SimpleFOC Mini must be jumpered to `3V3` on the breakout itself.
@@ -127,12 +129,12 @@ software "disable" means anyway).
 | D2      | 3    | Knob rot A          | JTAG-select strap — safe at boot |
 | D3      | 4    | Knob rot B          | |
 | D4      | 5    | Knob push-button    | INPUT_PULLUP, polled |
-| D5      | 6    | LED WW MOSFET gate  | LEDC PWM 25 kHz / 8-bit |
-| D6      | 43   | LED CW MOSFET gate  | UART0 TX strap — brief ROM flicker at boot |
+| D5      | 6    | LED CW MOSFET gate  | LEDC PWM 25 kHz / 8-bit |
+| D6      | 43   | LED WW MOSFET gate  | UART0 TX strap — brief ROM flicker at boot |
 | D7      | 44   | DRV8313 nSLEEP       | UART0 RX strap — external pull-up holds HIGH |
-| D8      | 7    | DRV8313 IN3 (phase C)| MCPWM |
-| D9      | 8    | DRV8313 IN2 (phase B)| MCPWM |
-| D10     | 9    | DRV8313 IN1 (phase A)| MCPWM |
+| D8      | 7    | DRV8313 IN3 (`PIN_PWM_C`)| MCPWM |
+| D9      | 8    | DRV8313 IN2 (`PIN_PWM_A`)| MCPWM — A/B swapped in code to invert rotor direction |
+| D10     | 9    | DRV8313 IN1 (`PIN_PWM_B`)| MCPWM |
 | 3V3     | —    | MT6701 · SimpleFOC 3V3 / EN jumper · encoder V+ | |
 | 5V      | —    | Mini360 OUT+         | XIAO onboard LDO to 3V3 |
 | GND     | —    | common               | shared with Mean Well V−, Mini360 OUT−, LED MOSFET sources |
@@ -150,13 +152,13 @@ differs. `s3/common/pins.h` selects the right GPIO numbers based on the
 | `PIN_ROT_A`  | 3  | 3  | JTAG strap, internal pull-up at boot is fine |
 | `PIN_ROT_B`  | 4  | 4  | unchanged |
 | `PIN_BTN`    | 5  | 5  | unchanged |
-| `PIN_LED_WW` | 6  | 6  | unchanged |
-| `PIN_LED_CW` | 43 | 7  | off the UART0 TX strap on Teyleten — no boot flicker |
+| `PIN_LED_WW` | 43 | 7  | off the UART0 TX strap on Teyleten — no boot flicker |
+| `PIN_LED_CW` | 6  | 6  | unchanged |
 | `PIN_DRV_EN` | — (jumpered to 3V3) | 8 | software-controlled on Teyleten |
 | `PIN_NSP`    | 44 | 10 | off the UART0 RX strap on Teyleten |
 | `PIN_PWM_C`  | 7  | 11 | DRV8313 IN3 |
-| `PIN_PWM_B`  | 8  | 12 | DRV8313 IN2 |
-| `PIN_PWM_A`  | 9  | 13 | DRV8313 IN1 |
+| `PIN_PWM_A`  | 8  | 12 | DRV8313 IN2 — A/B swapped in code to invert rotor direction |
+| `PIN_PWM_B`  | 9  | 13 | DRV8313 IN1 |
 | (spare)      | —  | 9  | unused on Teyleten |
 
 ---
@@ -230,13 +232,15 @@ idf.py build
 idf.py -p <PORT> flash monitor
 ```
 
-M1 / M2 / M3 are the staged debug scaffolds — same recipe, swap the stage
-directory. They don't need `esp-matter` (no Matter, no BLE), so sourcing
+M1 / M2 / M3 are the staged debug scaffolds, archived under
+`s3/archive/milestones/` — same recipe, swap the stage directory. They don't
+need `esp-matter` (no Matter, no BLE), so sourcing
 `~/esp/esp-matter/export.sh` is optional.
 
 ### Experimental: Teyleten ESP32-S3 SuperMini build
 
-`s3/supermini_m4/` is a sibling of `firmware/` for the Teyleten board.
+`s3/archive/milestones/supermini_m4/` is a sibling of the milestone scaffolds
+for the Teyleten board.
 Same firmware behavior — only the GPIO numbers wired to peripherals differ
 (see § 2 Hardware "Pin map: XIAO vs Teyleten"). The supermini build sets
 `-DBRUSHLESSLAMP_BOARD_TEYLETEN=1` at project scope, which selects the
@@ -244,7 +248,7 @@ alternate branch in `s3/common/pins.h`. Drops OTA + uses 4 MB flash layout
 to fit Teyleten's smaller flash (`partitions.csv`, `sdkconfig.defaults`).
 
 ```sh
-cd ~/esp/brushlesslamp-s3/supermini_m4
+cd ~/esp/brushlesslamp-s3/archive/milestones/supermini_m4
 idf.py set-target esp32s3
 idf.py build
 idf.py -p <PORT> flash monitor
@@ -418,15 +422,15 @@ left off:
 | `chip::DeviceLayer::PlatformMgr().ScheduleWork()` return ignored at the three `matter_push_*` sites. If the deferred-lambda queue is full (e.g., knob flood while Wi-Fi is stuck retransmitting), each failed schedule leaks the heap-allocated `OnOffPush`/`LevelPush` object. | Slow heap drift; eventual `LoadProhibited` after hours of stress (matches esp-matter#748). | Check `CHIP_ERROR` return; on non-OK, `delete p` and `ESP_LOGE`. `s3/firmware/main/matter_app.cpp`. | [esp-matter#748](https://github.com/espressif/esp-matter/issues/748). |
 | Default `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072` is tight under the operational mDNS + CASE burst right after commissioning. | Intermittent `LoadProhibited` in the lwIP/Matter mDNS path during the first ~30 s post-pairing. | `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096` in `s3/firmware/sdkconfig.defaults`. | — |
 | SimpleFOC's `initFOC()` direction-detection sweep returns the wrong `sensor_direction` when the rotor can't move freely in both directions during the sweep (lead-screw pinned at the off-stop, hard mechanical limit). On a lamp homed at install, every subsequent boot has the rotor at off — so every boot mis-detects, inverting the control loop. | Lamp tries to move "up" but goes back into the stop; position loop stalls at user_angle=0 with `dir=+1` in the log (opposite of the verified `dir=-1`). | Cache `sensor_direction` in `foc_cal:dir` NVS after the first boot's free-position alignment; load before `initFOC()` so the direction sweep is skipped and only `zero_electric_angle` (which the wedged-rotor sweep handles correctly) is recomputed. `s3/common/motor.cpp` `load_sensor_direction()` / `save_sensor_direction()`. | — |
-| Boot-time motor homing into a hard stop in closed-loop voltage-mode FOC saturates Uq for the full stall-detection window (~1.2 s); the prolonged saturation corrupts the FOC commutation state, and no in-place re-init recovers (alignment can't sweep with rotor pinned). | After homing detects the stall, the motor can no longer develop torque in either direction; Uq saturates but `shaft_angle` doesn't move. | After stall, set `foc_cal:homed` and `esp_restart()`. Next boot starts with encoder=0, runs `initFOC` from scratch at the off-stop (with the cached `sensor_direction` so only the offset sweep runs), then proceeds to normal operation. `run_first_boot_homing()` + `esp_restart()` in `s3/common/motor.cpp`. | — |
+| Boot-time motor homing into a hard stop in closed-loop voltage-mode FOC saturates Uq for the full stall-detection window (~0.6 s: 400 ms warm-up + 150 ms sustained-stall window); the prolonged saturation corrupts the FOC commutation state, and no in-place re-init recovers (alignment can't sweep with rotor pinned). | After homing detects the stall, the motor can no longer develop torque in either direction; Uq saturates but `shaft_angle` doesn't move. | After stall, set `foc_cal:homed` and `esp_restart()`. Next boot starts with encoder=0, runs `initFOC` from scratch at the off-stop (with the cached `sensor_direction` so only the offset sweep runs), then proceeds to normal operation. `run_first_boot_homing()` + `esp_restart()` in `s3/common/motor.cpp`. | — |
 | External 5V (via Schottky on the XIAO VBUS castellation) sags 3V3 below the default `BROWNOUT_DET_LVL_SEL_3` (~2.98 V) during WiFi-assoc / BLE TX peaks. The S3 brownout reset is also misreported as a software reset (`ESP_RST_SW`) instead of `ESP_RST_BROWNOUT` ([IDF #17718](https://github.com/espressif/esp-idf/issues/17718)), masking it as a silent reboot mid-PASE. | Commissioning aborts on external power but works fine on USB; no "Brownout detector triggered" log. The next-boot reset_reason is `SW` or `WDT` rather than `BROWNOUT`. | Drop threshold to `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y` (~2.44 V) so brief sags ride out. Enable `MBEDTLS_HARDWARE_MPI` / `_AES` / `_SHA` so the PASE crypto window (where CPU + BLE peak together) is shorter, reducing exposure to rail sag. Hardware mitigation: 470 µF low-ESR cap on 3V3 at the module. `s3/firmware/sdkconfig.defaults`. | [IDF #17718](https://github.com/espressif/esp-idf/issues/17718) |
 
 ---
 
 ## 7.1 Resolved: external 5 V boot now works (2026-04-28)
 
-> **Resolution:** `# CONFIG_ENABLE_CHIP_SHELL is not set` in `s3/firmware/sdkconfig.defaults`,
-> plus `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/firmware/sdkconfig.defaults.esp32s3`.
+> **Resolution:** `# CONFIG_ENABLE_CHIP_SHELL is not set` plus
+> `CONFIG_ESP_TASK_WDT_PANIC=y`, both in `s3/firmware/sdkconfig.defaults`.
 > The chip wasn't wedged in an EN-pin partial-reset state — it was crash-rebooting
 > from a starved core-0 IDLE task on every host-less boot.
 
@@ -477,6 +481,7 @@ table or in commit messages; together they're the verified-stable set.
 # CHIP_SHELL OFF — see § 7.1.
 # CONFIG_ENABLE_CHIP_SHELL is not set
 CONFIG_ESP_TASK_WDT_PANIC=y                                  # clean reboot if any task starves IDLE
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n                   # core 1 IDLE starves by design (FOC busy loop)
 
 # Logging — keep USB-CDC TX volume low (CHIP detail INFO chatter backpressures the JTAG console).
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
@@ -484,26 +489,29 @@ CONFIG_CHIP_DETAIL_LOGGING=n
 CONFIG_CHIP_PROGRESS_LOGGING=y
 CONFIG_CHIP_ERROR_LOGGING=y
 
-# CHIP task placement + budgets — MRP retries dispatch promptly, subscription fan-out has room.
+# CHIP task placement + budgets — MRP retries dispatch promptly inside the hub's exchange ceiling.
 CONFIG_CHIP_TASK_PRIORITY=2
 CONFIG_CHIP_TASK_STACK_SIZE=10240
 CONFIG_DISPATCH_EVENT_LONG_DISPATCH_TIME_WARNING_THRESHOLD_MS=200
 CONFIG_MRP_MAX_RETRANS=6
 CONFIG_MRP_RETRY_INTERVAL_SENDER_BOOST_FOR_WIFI_ETHERNET=100
 CONFIG_CHIP_DEVICE_CONFIG_FAILSAFE_EXPIRY_LENGTH_SEC=90
-CONFIG_CHIP_IM_MAX_NUM_READ_HANDLER=6
-CONFIG_MAX_CHIP_SUBSCRIPTIONS=6
-CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART=y
+CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=2               # root node + ColorTemperatureLight
 
 # BLE — 517 MTU + DLE keeps Attestation / CSR / AddNOC in one indication; pin to core 0 (away from FOC).
 CONFIG_BT_NIMBLE_MEM_OPTIMIZATION=y
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517
 CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y
-CONFIG_BT_NIMBLE_ACL_BUF_COUNT=10
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=12
 CONFIG_BT_NIMBLE_ACL_BUF_SIZE=255
-CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=6144
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
+CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n
 CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
 CONFIG_BT_CTRL_PINNED_TO_CORE_0=y
+CONFIG_BLE_FAST_ADVERTISING_INTERVAL_MIN=32                  # pin fast adv to 20 ms (min = max)
+CONFIG_BLE_FAST_ADVERTISING_INTERVAL_MAX=32
+CONFIG_BT_CTRL_COEX_PHY_CODED_TX_RX_TLIM_EN=y                # BLE/Wi-Fi coex on the shared 2.4 GHz radio
 
 # Wi-Fi — RX buffers sized for the BLE→Wi-Fi handover + operational mDNS burst; symmetric AMPDU.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
@@ -512,20 +520,43 @@ CONFIG_ESP_WIFI_RX_BA_WIN=16
 CONFIG_ESP_WIFI_TX_BA_WIN=16
 
 # IP / lwIP — IPv6 pool for SLAAC + per-fabric + transients; TCPIP stack headroom for mDNS burst.
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+CONFIG_LWIP_HOOK_IP6_ROUTE_DEFAULT=y
+CONFIG_LWIP_HOOK_ND6_GET_GW_DEFAULT=y
 CONFIG_LWIP_IPV6_NUM_ADDRESSES=8
 CONFIG_LWIP_IPV6_MEMP_NUM_ND6_QUEUE=5
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
-CONFIG_LWIP_DHCP_DOES_ARP_CHECK=n                            # skip ~1 s probe on Wi-Fi reconnect
+CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y                 # skip ~1 s ARP probe on Wi-Fi reconnect (choice member; "ARP_CHECK=n" was a no-op)
 CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4                          # mDNS metadata slots
 
-# Heap — light poisoning names the offender on a corruption panic; ~50 ns / op.
-CONFIG_HEAP_POISONING_LIGHT=y
+# Heap poisoning OFF — ~15 % alloc overhead during PASE (lots of small allocs);
+# revert to LIGHT only for heap-corruption debugging.
+# CONFIG_HEAP_POISONING_LIGHT is not set
+
+# Flash auto-suspend — NVS commits (incl. CHIP deferred persistence) no longer
+# freeze both cores and drop encoder counts mid-travel.
+CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+
+# Brownout + crypto — ride out 3V3 sags on external 5 V; HW accel shortens the PASE peak window.
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+CONFIG_MBEDTLS_HARDWARE_MPI=y
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+
+# Discovery — commissionable mDNS records stay published 48 h so a retry still finds the device.
+CONFIG_ENABLE_EXTENDED_DISCOVERY=y
 
 # We don't expose SoftAP / OTA is wired through esp-matter requestor.
 CONFIG_ENABLE_WIFI_AP=n
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_ENABLE_OTA_REQUESTOR=y
 ```
+
+The defaults file additionally carries the structural plumbing not repeated
+here: the custom `partitions.csv` partition table, NimBLE-on/Bluedroid-off,
+`CONFIG_MBEDTLS_HKDF_C=y`, and the ~100-line `CONFIG_SUPPORT_*_CLUSTER=n`
+flash-trim block.
 
 When in doubt run `diff <(grep -E '^[^#]' ~/esp/brushlesslamp-s3/firmware/build/sdkconfig | sort) <(grep -E '^[^#]' s3/firmware/sdkconfig.defaults | sort)` to confirm none of these silently regressed.
 
@@ -603,7 +634,7 @@ knob turn           │                            │                │
 | `foc_cal`  | `dir`     | `motor_foc_task`                 | cached `sensor_direction` (±1). Present after first successful `initFOC()`; skips the direction sweep on subsequent boots. |
 | `leds`     | `maxduty` | `leds_fader_task` (debounced)    | user-selected brightness, persists across reboots. Floored at `LED_MAX_DUTY_MIN`. |
 | `leds`     | `ct`      | `leds_fader_task` (debounced)    | last color temperature in mireds, persists across reboots. Clamped to `[COLORTEMP_MIN, COLORTEMP_MAX]`; default `370` (≈2700 K, Google Home "Soft White"). |
-| `input`    | `spd_idx` | `input_task` double-click handler | selected speed preset index (0..3). |
+| `input`    | `spd_idx` | `input_task` double-click handler | selected speed preset index (0..2). |
 | `chip-*`   | —         | CHIP stack                       | Matter fabric, counters, NOC. `esp_matter::factory_reset` wipes everything in this NVS partition. |
 
 `esp_secure_cert` (separate partition) and `fctry` (separate NVS partition)
@@ -628,7 +659,8 @@ Scan the QR PNG from `mfg_out/out/<vid>_<pid>/<uuid>/` or enter the
 `manualcode` column from `-onb_codes.csv`.
 
 **Motor won't move, `[motor] cmd:N.NN` climbs but `vel:0`** — either the
-shaft is physically blocked (stall detection should fire within 1.2 s and
+shaft is physically blocked (stall detection should fire within ~0.6 s —
+400 ms warm-up + 150 ms sustained-stall window — and
 snap target to shaft) or the calibration is stale. Factory-reset (9 s
 button hold) wipes `foc_cal`; a fresh direction sweep runs on next boot.
 

@@ -1,7 +1,7 @@
 # Archive
 
 Historical and diagnostic targets kept for reference. **None of these ship.**
-The shipping firmware lives in `../m4-matter/`.
+The shipping firmware lives in `../firmware/`.
 
 ## `milestones/`
 

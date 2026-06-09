@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-set(PROJECT_VER "0.15.4-m4")
+set(PROJECT_VER "0.15.4")
 set(PROJECT_VER_NUMBER 154)
 
 ## Matter uses its own toolchain layer, so ESP_MATTER_PATH must be set before

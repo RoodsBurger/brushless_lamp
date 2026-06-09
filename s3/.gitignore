@@ -6,3 +6,6 @@
 **/dependencies.lock
 **/sdkconfig
 **/sdkconfig.old
+
+## clangd index cache
+**/.cache/

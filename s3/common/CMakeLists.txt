@@ -1,7 +1,7 @@
 ## Shared motor core used by every M-stage. Each m-project's top-level CMakeLists adds
-## ../common to EXTRA_COMPONENT_DIRS, then main/CMakeLists lists brushlesslamp_core in
-## REQUIRES. The component name is deliberate — it's what main pulls in, regardless
-## of which stage's main.cpp is building.
+## ../common to EXTRA_COMPONENT_DIRS, then main/CMakeLists lists `common` (the component
+## name, taken from this directory's name) in REQUIRES — regardless of which stage's
+## main.cpp is building.
 
 idf_component_register(
     SRCS "motor.cpp"

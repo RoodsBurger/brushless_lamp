@@ -1,3 +1,5 @@
+> **HISTORICAL (C6 era, 2026-03) — superseded by s3/README.md. Do NOT follow the recommendations below; in particular item 4 (enable CHIP_SHELL) was later proven to TWDT-panic production boots (see s3/README §7.1).**
+
 # Morning status — BrushlessLamp native ESP-IDF migration
 
 **TL;DR:** Working native ESP-IDF + esp-matter firmware is built, flashed, and ready to commission. The upstream C6 `chip[DL]` WiFi-reconnect crash fix ([PR#42320](https://github.com/project-chip/connectedhomeip/pull/42320)) is cherry-picked and verified — no panic in 2 min of stable uncommissioned operation + multiple soft-resets. Only the actual Google-Home-commissioning + end-to-end motor tests need your physical presence.

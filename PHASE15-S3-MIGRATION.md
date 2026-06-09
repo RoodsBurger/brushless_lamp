@@ -1,5 +1,7 @@
 # BrushlessLamp — Phase 15: XIAO ESP32-C6 → XIAO ESP32-S3 Migration
 
+> **Historical planning doc (pre-migration) — superseded by s3/README.md.** Versions, paths and pin tables below are stale.
+
 ## Why
 
 After ~14 phases of fighting single-core + no-FPU limitations on the C6, moving to the XIAO S3 unlocks:
