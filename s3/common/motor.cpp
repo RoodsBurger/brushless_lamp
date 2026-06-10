@@ -1,5 +1,6 @@
 // FOC + position loop on core 1; encoder ISR attaches inside the task so noInterrupts() (per-core) blocks it.
-// loopFOC()/move() run even while disabled (they only refresh sensor state then) so back-driven motion stays visible.
+// loopFOC()/move() run even while disabled (they only refresh sensor state then) so the LED fade tracks the
+// real shaft; back-drive never wakes the motor — only commands do (wake compares target vs parked snapshot).
 // Idle parks the DRV8313 via nSLEEP: outputs Hi-Z so the shaft spins truly free (user wants zero torque/drag
 // at idle — plain disable() would short the windings and feel damped), and any latched OCP/TSD fault clears.
 
@@ -295,6 +296,7 @@ static void motor_foc_task(void *) {
     s_motor.disable();   // boot idle; first target change wakes the task
 
     float    commanded_vel     = 0.0f;
+    float    parked_angle      = s_shaft_angle_cached;   // wake reference while disabled
     uint32_t last_ramp_us      = 0;
     uint32_t last_active_ms    = 0;
     uint32_t motion_started_ms = 0;
@@ -381,9 +383,17 @@ static void motor_foc_task(void *) {
 
         // Idle-disable when commanded, shaft, and pos_err all rest below their eps; entry
         // fires the settle callback so Matter learns knob-driven moves.
-        bool at_rest = fabsf(commanded_vel)          < VEL_AT_REST_EPS &&
-                       fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS &&
-                       fabsf(pos_err)                < POS_AT_REST_EPS;
+        // While parked, only a target moved away from the parked position wakes the
+        // motor — physical back-drive (off-stop wedge unwinding, hand moves) must not
+        // re-engage torque, or the lamp re-wedges into the stop in an endless cycle.
+        bool at_rest;
+        if (s_motor.enabled) {
+            at_rest = fabsf(commanded_vel)          < VEL_AT_REST_EPS &&
+                      fabsf(s_motor.shaft_velocity) < VEL_AT_REST_EPS &&
+                      fabsf(pos_err)                < POS_AT_REST_EPS;
+        } else {
+            at_rest = fabsf(s_target_angle - parked_angle) < POS_AT_REST_EPS;
+        }
         if (!at_rest) last_active_ms = now_ms;
         bool should_enable = (now_ms - last_active_ms) < IDLE_DISABLE_MS;
 
@@ -395,6 +405,7 @@ static void motor_foc_task(void *) {
             s_motor.disable();
             // Sleep the driver: outputs Hi-Z (zero idle drag), ~0.5 mA vs 1-5 mA active, latched faults clear.
             digitalWrite(PIN_NSP, LOW);
+            parked_angle  = user_angle;
             commanded_vel = 0.0f;
             // Persist resting position to NVS (debounced) so plug/unplug restores it.
             if (isnan(s_last_saved_position) || fabsf(user_angle - s_last_saved_position) > POS_SAVE_EPS_RAD) {
