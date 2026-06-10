@@ -83,7 +83,7 @@ The board is designed in **Autodesk Fusion (Electronics / former Eagle)**.
    no current sense) is *exactly* this project's intent. ~7 unique parts.
 
 4. **Reuse the existing MT6701 breakout — just add a connector.** The sensor stays the
-   off-the-shelf module already in the lamp (already ABZ mode, 1024 CPR), kept at the
+   off-the-shelf module already in the lamp (already ABZ mode, 1024 PPR / 4096 CPR), kept at the
    motor shaft and plugged into a `J_SENSOR` connector with a 4–5-wire cable. Nothing to
    place or program on the custom board. (A fully-custom bare-chip satellite is
    documented as optional only — it would add a one-time 5 V EEPROM-programming step.)

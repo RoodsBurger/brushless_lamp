@@ -45,7 +45,7 @@ lesson the project already learned with the SS14 on the XIAO 5 V path).
 ## 2. Encoder: existing breakout, plugged in (no custom sensor board)
 
 The MT6701 stays as the **existing breakout module** already in the lamp — already in
-**ABZ mode at 1024 CPR**. It lives at the motor shaft and plugs into the main board's
+**ABZ mode at 1024 PPR** (4096 CPR in quadrature). It lives at the motor shaft and plugs into the main board's
 `J_SENSOR` connector with a short **5-wire cable** (`VDD, GND, A, B, Z` — Z wired through
 to a spare GPIO just in case, unused by current firmware).
 **Nothing to place or program on the custom board** — just the mating connector. This is
@@ -102,8 +102,8 @@ Reserved / avoid on WROOM-1-N8R8: `0` (BOOT), `3/45/46` (strapping), `19/20` (US
 | `PIN_ROT_A`  (knob A)  | 8  | PCNT | hardware glitch-filtered |
 | `PIN_ROT_B`  (knob B)  | 9  | PCNT | |
 | `PIN_BTN`    (knob SW) | 10 | GPIO in | `INPUT_PULLUP`, polled |
-| `PIN_LED_WW` (WW gate) | 11 | LEDC | 25 kHz / 8-bit |
-| `PIN_LED_CW` (CW gate) | 12 | LEDC | 25 kHz / 8-bit |
+| `PIN_LED_WW` (WW gate) | 11 | LEDC | 25 kHz / 10-bit |
+| `PIN_LED_CW` (CW gate) | 12 | LEDC | 25 kHz / 10-bit |
 | `PIN_STATUS_LED` (opt) | 21 | GPIO out | optional board status LED |
 | USB_D−                 | 19 | USB-Serial-JTAG | fixed by silicon |
 | USB_D+                 | 20 | USB-Serial-JTAG | fixed by silicon |

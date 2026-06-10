@@ -7,7 +7,7 @@ The order to actually do this in, with the risks to retire early.
 - [ ] **Confirm WROOM-1-N8R8** (vs N8 non-PSRAM if you ever want GPIO35/36/37 back —
       not needed today, and N8R8 = exact XIAO silicon).
 - [x] **MT6701: reuse the existing breakout**, plugged into `J_SENSOR` (already ABZ /
-      1024 CPR — no programming). Just match the connector pinout/pitch to your breakout.
+      1024 PPR — no programming). Just match the connector pinout/pitch to your breakout.
       *(The bare-chip satellite with its 5 V EEPROM burn is the optional path you're not
       taking.)*
 - [ ] **EN strategy:** software `PIN_DRV_EN` (recommended) **plus** a 0 Ω/jumper to 3V3
@@ -73,7 +73,7 @@ The order to actually do this in, with the risks to retire early.
 3. [ ] **Flash the real firmware** with a new `BRUSHLESSLAMP_BOARD_CUSTOM` `pins.h` branch
        (snippet in [`01`](01-architecture-and-pinmap.md)). Motor/LED disconnected.
 4. [ ] **Encoder.** Plug the existing MT6701 breakout into `J_SENSOR`; verify it reads
-       **1024 CPR quadrature** and A/B counts (same module as today — should just work).
+       **1024 PPR (4096 CPR in quadrature)** and A/B counts (same module as today — should just work).
 5. [ ] **Driver + motor.** Connect motor. EN enabled (jumper or GPIO). Verify `initFOC`,
        direction sweep, smooth spin, nSLEEP fault-clear, and `nFAULT` read-back (new
        capability). Confirm audibility matches the module build (5 kHz loop, center-aligned

@@ -23,7 +23,7 @@ Per [pcbway.com/smt_ordering_guide.html](https://www.pcbway.com/smt_ordering_gui
 | PCBWay requires | Status |
 |---|---|
 | **BOM as Excel `.xlsx`** (they reject PDF/CSV), columns: Designators, Qty, Package, Part number / value, **Type PTH-or-SMD** | ✅ [`PCBWay-BOM.xlsx`](PCBWay-BOM.xlsx) — exact columns, Type = SMD/PTH, comma-separated designators |
-| **DNP clearly indicated** | ✅ `Populate = DNP` (rows highlighted) for `D_CLW/D_CLC`, `J_PROG` |
+| **DNP clearly indicated** | ✅ `Populate = DNP` (rows highlighted) for `D_CLW/D_CLC`, `R_AZ_A/B/C`, `J_PROG` |
 | **Pick&place / centroid, designators matching the BOM** (THT may be excluded) | ⏳ export from Fusion after routing; our RefDes are consistent |
 | **Gerbers** + silkscreen | ⏳ export from Fusion after routing |
 | **Polarity / pin-1 on silkscreen** (cathode bar, `+`, pin-1) — or an assembly drawing | ✅ vendor footprints carry their own; the generic diodes (cathode bar), polarised caps (`+`), and SOT-23-6 buck (pin-1 dot) now have silk marks too |
@@ -63,7 +63,7 @@ the WROOM-1 carries its own RF ground internally so no inner plane is needed.
 
 **The assembly-ready BOM is done** — [`06-bom-assembly.csv`](06-bom-assembly.csv) is
 reconciled 1:1 against the 71 parts in the schematic, with a concrete MPN per line
-(including the 4 part-specific picks), `Populate` flags (DNP = `D_CLW/D_CLC`, `J_PROG`),
+(including the 4 part-specific picks), `Populate` flags (DNP = `D_CLW/D_CLC`, `R_AZ_A/B/C`, `J_PROG`),
 and LCSC numbers where confirmed. Hand that file to PCBWay alongside the Gerbers +
 centroid. Before ordering, just: (a) verify the few LCSC# marked "verify", and (b)
 double-check the 4 `*`-flagged part-specific land patterns match the parts (below).
@@ -106,10 +106,10 @@ Per [`fusion/FOOTPRINTS.md`](fusion/FOOTPRINTS.md):
 - **SW_RST, SW_BOOT** — SMD tactile: confirm `TACT` land.
 
 ### DNP (do not populate)
-Mark these so PCBWay skips them: `C_DP`, `C_DM` (USB EMI caps, reserved), `D_CLW`, `D_CLC`
-(LED drain clamps), `R_AZ_A`/`R_AZ_B`/`R_AZ_C` (encoder pull-up stiffening, populate only
-for a long/noisy cable), and `J_PROG` (bare fallback pads — no part). `C_BOOT` / `C_FF` are
-optional — populate or DNP as you choose.
+The six DNP parts on the board: `D_CLW`, `D_CLC` (LED drain clamps), `R_AZ_A`/`R_AZ_B`/`R_AZ_C`
+(encoder pull-up stiffening, populate only for a long/noisy cable), and `J_PROG` (bare
+fallback pads — no part). `C_BOOT` / `C_FF` are optional — populate or DNP as you choose.
+(`C_DP`/`C_DM` from the design-reference BOM are **not on this board** — ignore them.)
 
 ## PCBWay assembly form — values
 
@@ -117,11 +117,10 @@ For the "Other Parameters" count fields (optional; the uploaded BOM is authorita
 
 | Field | Value |
 |---|---|
-| Number of Unique Parts | **42** (distinct kinds placed) |
-| Number of SMD Parts | **61** |
+| Number of SMD Parts | **58** placed (65 placed − 7 through-hole) |
 | Number of BGA/QFP Parts | **0** (DRV8313 = HTSSOP, WROOM-1 = module) |
 | Number of Through-Hole Parts | **7** (`J_PWR/J_MOTOR/J_SENSOR/J_KNOB/J_BTN/J_LED` + `J_EXP`) |
-| Total placed | 65 (DNP: `D_CLW`, `D_CLC`, `R_AZ_A/B/C`, `J_PROG`) |
+| Total placed | 65 of 71 (6 DNP: `D_CLW`, `D_CLC`, `R_AZ_A/B/C`, `J_PROG`) |
 
 Form choices: **Turnkey**, **Single pieces** (re-check vs panel after layout if a board
 side < 50 mm), **Top side** (all SMD on top; THT assembled separately), sensitive
