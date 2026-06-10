@@ -37,8 +37,9 @@ extern "C" void app_main() {
     gpio_set_direction((gpio_num_t)PIN_NSP, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_NSP, 0);
 
-#ifndef BRUSHLESSLAMP_BOARD_TEYLETEN
+#if !defined(BRUSHLESSLAMP_BOARD_TEYLETEN) && !defined(BRUSHLESSLAMP_BOARD_CUSTOM)
     // XIAO on-board user LED is active-LOW on GPIO 21; drive HIGH = off.
+    // (Teyleten and custom boards have no such LED; the custom board's status LED is left unmanaged at boot.)
     gpio_set_direction((gpio_num_t)PIN_XIAO_USER_LED, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_XIAO_USER_LED, 1);
 #endif
