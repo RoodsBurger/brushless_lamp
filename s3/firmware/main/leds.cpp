@@ -1,5 +1,5 @@
-// LEDC dual-channel WW/CW at 25 kHz / 11-bit (perceptual values stay 0..255; gamma
-// expands to 0..2047 hardware duty). CW runs 180° out of phase via hpoint so the two
+// LEDC dual-channel WW/CW at 25 kHz / 10-bit (perceptual values stay 0..255; gamma
+// expands to 0..1023 hardware duty). CW runs 180° out of phase via hpoint so the two
 // MOSFET current pulses interleave on the shared 24 V rail. Fader task on CORE_OTHERS
 // steps current → target one LED_FADE_STEP at a time. leds_pulse spawns a one-shot
 // task that owns the pins during its blink cycle via s_pulse_active.
@@ -29,7 +29,7 @@ static constexpr uint32_t       LED_NVS_DEBOUNCE = 1000;
 static volatile uint16_t s_colortemp_target = COLORTEMP_DEFAULT;
 static volatile uint8_t  s_max_duty         = LED_MAX_DUTY_DEFAULT;
 
-// Fader state (read+written only from leds_fader_task). 11-bit hardware duty.
+// Fader state (read+written only from leds_fader_task). 10-bit hardware duty.
 static uint16_t s_current_ww        = 0;
 static uint16_t s_current_cw        = 0;
 static uint16_t s_colortemp_current = COLORTEMP_DEFAULT;
@@ -52,7 +52,7 @@ static void led_write_ww(uint16_t duty) { led_write(LEDC_CH_WW, duty, 0); }
 static void led_write_cw(uint16_t duty) { led_write(LEDC_CH_CW, duty, CW_HPOINT); }
 
 // Apply gamma to perceptual duty so equal knob steps feel visually equal (Stevens' power law).
-// 0..255 perceptual in → 0..2047 hardware duty out: the 11-bit range keeps the low end
+// 0..255 perceptual in → 0..1023 hardware duty out: the 10-bit range keeps the low end
 // of the gamma curve from collapsing into a handful of duty codes.
 static uint16_t gamma_correct(uint8_t perceptual) {
     if (perceptual == 0) return 0;

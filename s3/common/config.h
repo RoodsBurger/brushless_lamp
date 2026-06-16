@@ -13,9 +13,9 @@ constexpr float    SUPPLY_VOLTAGE    = 24.0f;
 constexpr float    PHASE_RESISTANCE  = 5.0f;
 constexpr float    KV_RATING         = 100.0f;
 // INERT in voltage torque mode (SimpleFOC 2.4.0 ignores it there). Stall
-// protection is the runtime stall handler + nSLEEP fault-clear in motor.cpp;
-// estimated_current mode (which does enforce this) was tried 2026-06-09 and
-// reverted: its unfiltered back-EMF feed-forward made the motor audibly louder.
+// protection is the runtime stall handler + nSLEEP fault-clear in motor.cpp.
+// estimated_current mode would enforce this, but its unfiltered back-EMF
+// feed-forward makes the motor audibly louder, so voltage mode is used instead.
 constexpr float    CURRENT_LIMIT     = 0.5f;
 constexpr float    VELOCITY_LIMIT    = 50.0f;       // SimpleFOC's internal velocity cap
 // 6 V sensor-align drives enough current (~1.2 A / 5 Ω) for a clean direction

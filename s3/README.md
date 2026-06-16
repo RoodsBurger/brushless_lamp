@@ -129,7 +129,7 @@ software "disable" means anyway).
 | D2      | 3    | Knob rot A          | JTAG-select strap — safe at boot |
 | D3      | 4    | Knob rot B          | |
 | D4      | 5    | Knob push-button    | INPUT_PULLUP, polled |
-| D5      | 6    | LED CW MOSFET gate  | LEDC PWM 25 kHz / 8-bit |
+| D5      | 6    | LED CW MOSFET gate  | LEDC PWM 25 kHz / 10-bit |
 | D6      | 43   | LED WW MOSFET gate  | UART0 TX strap — brief ROM flicker at boot |
 | D7      | 44   | DRV8313 nSLEEP       | UART0 RX strap — external pull-up holds HIGH |
 | D8      | 7    | DRV8313 IN3 (`PIN_PWM_C`)| MCPWM |
@@ -416,9 +416,9 @@ left off:
 | `app_reset` + device_hal transitively require `button` and `led_driver` components. | Build failure: "component `button` / `led_driver` could not be found". | `EXTRA_COMPONENT_DIRS` in top-level `CMakeLists.txt` adds both `device_hal/button_driver` and `device_hal/led_driver`, even though our code doesn't use them directly. | — |
 | ESP-IDF default CPU frequency is 160 MHz; software ECDSA (PASE_Pake2, CSR keypair) at that clock takes ~800 ms / ~530 ms and blows past the Matter commissioner's per-step timeout (`CHIP_ERROR_TIMEOUT` 32). | Commissioning aborts after CSRRequest with `Long dispatch time: 530 ms` in the CHIP log and no fabric added. | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` + `CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y` in `sdkconfig.defaults.esp32s3` — runs at the S3's rated 240 MHz and cuts crypto latency by ~1/3. | — |
 | Default BLE ATT MTU 256 fragments Matter's AttestationResponse / CSRResponse / AddNOC (400–700 B) into 6+ L2CAP PDUs, each costing a 30–50 ms connection interval. | Slow commissioners (Nest Hub) bail on the CSRRequest step before we finish responding. | `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` + `CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_DATA_LENGTH_EXTENSION=y` in `sdkconfig.defaults`. | — |
-| `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | `matter_wipe_local_nvs()` in `matter_app.cpp`, invoked before `esp_matter::factory_reset()` (button path) and on the `kFabricRemoved` event (remote decommission). | — |
+| `esp_matter::factory_reset()` only clears CHIP's `chip-config`, `chip-counters`, KVS namespaces — our `foc_cal` / `leds` / `input` NVS stays. | After a factory reset, motor calibration uses a stale `sensor_direction` cache; rotor alignment misbehaves on certain starting positions. | Button path (`input.cpp`) does a full `nvs_flash_erase()` of the whole partition (clears CHIP *and* `foc_cal`/`leds`/`input`). `matter_wipe_local_nvs()` in `matter_app.cpp` clears the local namespaces on the `kFabricRemoved` event (remote decommission). | — |
 | `CONFIG_ENABLE_CHIP_SHELL=y` (esp-matter default) starts a `console` task running `chip::Shell::Engine::Root().RunMainLoop()` → `linenoise()` → `usb_serial_jtag_read()`. With no USB host attached the read returns `-1` immediately on every call without yielding; the task pegs core 0 at high priority, IDLE never runs, the Task WDT panics at 5 s. | Lamp boots, motor / knob / LEDs interactive for ~5 s, then chip resets in a loop. ISR heartbeat keeps blinking until the panic, so the device looks "wedged." Reset reason `0x06` (`ESP_RST_TASK_WDT`) once `CONFIG_ESP_TASK_WDT_PANIC=y` is also set. | `# CONFIG_ENABLE_CHIP_SHELL is not set` + `CONFIG_ESP_TASK_WDT_PANIC=y` in `s3/firmware/sdkconfig.defaults*`. Diagnostic story in § 7.1. | — (CHIP shell is dev-only; safe to disable on USB-Serial-JTAG-only boards.) |
-| `motor_foc_task` deleted IDLE's task-WDT subscription on CORE_MOTOR *after* `initFOC()`. A long sensor-align sweep (stuck rotor, 24 V rail sag, encoder noise) on a fresh boot can take > 5 s, and the busy `motor_foc_task` (prio 20) prevents IDLE0 on core 1 from running. | TWDT panic on first boot only, reset reason `0x06`, before the "Ready." banner. Couldn't be reproduced on a free shaft. | `esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(CORE_MOTOR))` hoisted to *before* the driver / motor init block in `s3/common/motor.cpp`. | — |
+| The busy `motor_foc_task` (prio 20) keeps core 1's IDLE task from running, so a long sensor-align sweep (stuck rotor, 24 V rail sag, encoder noise) on a fresh boot — which can take > 5 s — starves IDLE1 and trips the task WDT. | TWDT panic on first boot only, reset reason `0x06`, before the "Ready." banner. Couldn't be reproduced on a free shaft. | `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n` in `s3/firmware/sdkconfig.defaults` — core 1 IDLE starves by design under the FOC busy loop. | — |
 | `s_motor.initFOC()` returning 0 (encoder fault, missed phase wire) didn't halt the FOC task — the busy loop ran on miscalibrated `zero_electric_angle` and drove Uq into the wrong electrical phase, repeatedly tripping DRV8313 OCP. | Motor whines or twitches randomly; no movement; `[motor] initFOC()=0` in the log. | After the log line, on `!foc_ok`: `vTaskDelete(nullptr)`; bridges stay grounded via the prior `s_motor.disable()`. `s3/common/motor.cpp`. | — |
 | `chip::DeviceLayer::PlatformMgr().ScheduleWork()` return ignored at the three `matter_push_*` sites. If the deferred-lambda queue is full (e.g., knob flood while Wi-Fi is stuck retransmitting), each failed schedule leaks the heap-allocated `OnOffPush`/`LevelPush` object. | Slow heap drift; eventual `LoadProhibited` after hours of stress (matches esp-matter#748). | Check `CHIP_ERROR` return; on non-OK, `delete p` and `ESP_LOGE`. `s3/firmware/main/matter_app.cpp`. | [esp-matter#748](https://github.com/espressif/esp-matter/issues/748). |
 | Default `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072` is tight under the operational mDNS + CASE burst right after commissioning. | Intermittent `LoadProhibited` in the lwIP/Matter mDNS path during the first ~30 s post-pairing. | `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096` in `s3/firmware/sdkconfig.defaults`. | — |
@@ -581,9 +581,10 @@ motor_foc (prio 20, 200 µs)              main (IDF default)
                                            - LEDC writes (ledcWrite)
 ```
 
-`motor_foc` deletes its core's IDLE watchdog subscription — on a dedicated
-core the idle task would never run. The busy-wait is self-yielding via
-`micros()` polling; core 0 is never blocked.
+Core 1's IDLE task can't run while the FOC busy-wait holds the core, so its
+task-WDT check is disabled via `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n`
+in `sdkconfig.defaults`. The busy-wait is self-yielding via `micros()`
+polling; core 0 is never blocked.
 
 ### Module map
 
@@ -635,7 +636,7 @@ knob turn           │                            │                │
 | `foc_cal`  | `dir`     | `motor_foc_task`                 | cached `sensor_direction` (±1). Present after first successful `initFOC()`; skips the direction sweep on subsequent boots. |
 | `leds`     | `maxduty` | `leds_fader_task` (debounced)    | user-selected brightness, persists across reboots. Floored at `LED_MAX_DUTY_MIN`. |
 | `leds`     | `ct`      | `leds_fader_task` (debounced)    | last color temperature in mireds, persists across reboots. Clamped to `[COLORTEMP_MIN, COLORTEMP_MAX]`; default `370` (≈2700 K, Google Home "Soft White"). |
-| `input`    | `spd_idx` | `input_task` double-click handler | selected speed preset index (0..2). |
+| `input`    | `spd_idx` | `input_task` triple-click handler | selected speed preset index (0..2). |
 | `chip-*`   | —         | CHIP stack                       | Matter fabric, counters, NOC. `esp_matter::factory_reset` wipes everything in this NVS partition. |
 
 `esp_secure_cert` (separate partition) and `fctry` (separate NVS partition)

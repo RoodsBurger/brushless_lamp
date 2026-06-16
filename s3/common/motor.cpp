@@ -299,7 +299,7 @@ static void motor_foc_task(void *) {
     // Voltage mode is the silent baseline (docs recommend it for low-speed
     // gimbals). estimated_current would enforce CURRENT_LIMIT but its raw
     // back-EMF feed-forward injects 1 kHz velocity-jitter into Uq and cancels
-    // the motor's EM damping — audibly louder (tried + reverted 2026-06-09).
+    // the motor's EM damping, making it audibly louder.
     // Stall current is bounded instead by the runtime stall handler below.
     s_motor.torque_controller    = TorqueControlType::voltage;
     s_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
