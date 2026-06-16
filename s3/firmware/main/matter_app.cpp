@@ -157,6 +157,9 @@ void matter_app_init() {
 
     endpoint_t *ep = color_temperature_light::create(node, &lc, ENDPOINT_FLAG_NONE, nullptr);
     if (!ep) { ESP_LOGE(TAG, "endpoint create failed; restarting"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); }
+    // Also advertise the Dimmable + On/Off subset types (CT Light is their superset, no new clusters) so controllers that gate features on a plainer light type still match.
+    endpoint::add_device_type(ep, dimmable_light::get_device_type_id(), dimmable_light::get_device_type_version());
+    endpoint::add_device_type(ep, on_off_light::get_device_type_id(),  on_off_light::get_device_type_version());
     s_endpoint_id = endpoint::get_id(ep);
     ESP_LOGI(TAG, "ColorTemperatureLight endpoint=%u", s_endpoint_id);
 
