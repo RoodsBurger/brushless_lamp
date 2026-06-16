@@ -38,7 +38,9 @@ static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_PPR);
 static volatile float  s_target_angle          = 0.0f;
 static volatile float  s_shaft_angle_cached    = 0.0f;
 static volatile bool   s_sync_pending          = false;
-static void          (*s_settle_cb)(float)     = nullptr;
+static volatile bool   s_sync_allow_on         = false;   // may the pending settle turn the lamp ON? (knob raise only)
+static volatile bool   s_home_request          = false;   // set by motor_request_homing(), serviced on the FOC task
+static void          (*s_settle_cb)(float, bool) = nullptr;
 // Encoder reading that maps to user_angle=0; loaded from NVS at boot so the lead screw's
 // physical position carries across plug/unplug (incremental encoder otherwise resets to 0).
 static float           s_home_offset           = 0.0f;
@@ -187,6 +189,78 @@ static bool run_first_boot_homing() {
     return stalled;
 }
 
+// Runtime re-home (knob-hold gesture). Drives to the off-stop at a soft Uq cap and
+// makes that physical position the new logical 0. Unlike boot homing it does NOT
+// reboot — FOC is already calibrated, so we only re-zero s_home_offset. Runs inline
+// on the FOC task, blocking the position loop for the descent.
+static void run_runtime_homing() {
+    ESP_LOGW(TAG, "runtime homing: driving to off-stop");
+    float saved_vlimit = s_motor.voltage_limit;
+    s_motor.updateVoltageLimit(HOMING_VOLTAGE);
+    digitalWrite(PIN_NSP, HIGH);
+    delayMicroseconds(1100);          // DRV8313 tWAKE before driving
+    s_motor.enable();
+
+    uint32_t start_ms          = millis();
+    uint32_t motion_started_ms = 0;
+    uint32_t stuck_since_ms    = 0;
+    uint32_t next_foc_us       = micros();
+    uint32_t last_ramp_us      = micros();
+    float    commanded_vel     = 0.0f;
+    bool     stalled           = false;
+
+    while ((millis() - start_ms) < HOMING_TIMEOUT_MS) {
+        uint32_t now_us = micros();
+        while ((int32_t)(now_us - next_foc_us) < 0) now_us = micros();
+        next_foc_us += FOC_PERIOD_US;
+        if ((int32_t)(now_us - next_foc_us) > (int32_t)(2 * FOC_PERIOD_US)) {
+            next_foc_us = now_us + FOC_PERIOD_US;
+        }
+
+        float dt = (now_us - last_ramp_us) * 1e-6f;
+        last_ramp_us = now_us;
+        if (dt > 0.0f && dt < 0.1f) {
+            float step = MOTION_ACCEL * dt;
+            if      (commanded_vel >  HOMING_VELOCITY + step) commanded_vel -= step;
+            else if (commanded_vel <  HOMING_VELOCITY - step) commanded_vel += step;
+            else                                              commanded_vel  = HOMING_VELOCITY;
+        }
+
+        s_motor.loopFOC();
+        s_motor.move(commanded_vel);
+
+        bool ramp_done = fabsf(commanded_vel - HOMING_VELOCITY) < 0.1f;
+        if (!ramp_done) { motion_started_ms = 0; stuck_since_ms = 0; continue; }
+
+        uint32_t now_ms = millis();
+        if (motion_started_ms == 0) motion_started_ms = now_ms;
+        bool past_warmup  = (now_ms - motion_started_ms) > STALL_WARMUP_MS;
+        bool shaft_frozen = fabsf(s_motor.shaft_velocity) < STALL_VEL_EPS;
+        if (past_warmup && shaft_frozen) {
+            if (stuck_since_ms == 0) stuck_since_ms = now_ms;
+            else if ((now_ms - stuck_since_ms) > STALL_TIMEOUT_MS) { stalled = true; break; }
+        } else {
+            stuck_since_ms = 0;
+        }
+    }
+
+    s_motor.disable();
+    digitalWrite(PIN_NSP, LOW);
+    s_motor.updateVoltageLimit(saved_vlimit);
+
+    // The wedged physical position becomes logical 0; target follows so the lamp parks at the bottom.
+    s_home_offset = s_motor.shaft_angle;
+    portENTER_CRITICAL(&s_target_mux);
+    s_target_angle = 0.0f;
+    portEXIT_CRITICAL(&s_target_mux);
+    s_shaft_angle_cached = 0.0f;
+    save_position(0.0f);
+    s_sync_allow_on = false;          // homing must not turn the lamp on
+    s_sync_pending  = true;           // push the new 0/off state to Matter on the next idle
+    ESP_LOGW(TAG, "runtime homing: %s; re-zeroed (shaft=%.3f)",
+             stalled ? "stalled at stop" : "TIMEOUT — no stop found", s_home_offset);
+}
+
 static void motor_foc_task(void *) {
     // Encoder ISRs must attach from this task so they register on CORE_MOTOR.
     s_encoder.quadrature       = Quadrature::ON;
@@ -285,7 +359,8 @@ static void motor_foc_task(void *) {
         // Clamp: a firmware update may have shrunk ANGLE_MAX below the saved position;
         // the clamped target walks the lamp down to the new max on first wake.
         s_target_angle = clamp_angle(saved_pos);
-        s_sync_pending = true;              // push current state to Matter on first idle-disable
+        s_sync_allow_on = false;            // a restore reflects position but must not turn the lamp on
+        s_sync_pending  = true;             // push current state to Matter on first idle-disable
         ESP_LOGI(TAG, "restored position: user_angle=%.3f (home_offset=%.3f)", saved_pos, s_home_offset);
     } else {
         s_home_offset = s_motor.shaft_angle;
@@ -304,6 +379,20 @@ static void motor_foc_task(void *) {
     uint32_t next_foc_us       = micros();
 
     while (true) {
+        // Knob-hold re-home: runs the descent inline, then re-zeros and parks idle at 0.
+        if (s_home_request) {
+            s_home_request = false;
+            run_runtime_homing();
+            commanded_vel     = 0.0f;
+            last_ramp_us      = 0;
+            motion_started_ms = 0;
+            stuck_since_ms    = 0;
+            parked_angle      = 0.0f;     // re-zeroed by homing
+            last_active_ms    = 0;        // (now_ms - 0) >> IDLE_DISABLE_MS → stay idle, don't wake
+            next_foc_us       = micros();
+            continue;
+        }
+
         // Busy-wait to the next 200 µs boundary; if we fell behind by more
         // than two periods (e.g. a long printf), resync to avoid a catch-up
         // burst of back-to-back iterations.
@@ -367,7 +456,8 @@ static void motor_foc_task(void *) {
                 portEXIT_CRITICAL(&s_target_mux);
                 commanded_vel = 0.0f;
                 s_motor.PID_velocity.reset();    // drop the wound-up integrator so torque stops now, not at idle-disable
-                s_sync_pending = true;
+                s_sync_allow_on = false;         // a stall must never turn the lamp on
+                s_sync_pending  = true;
                 digitalWrite(PIN_NSP, LOW);      // ≥20 µs low resets all latched faults
                 delayMicroseconds(50);
                 digitalWrite(PIN_NSP, HIGH);
@@ -412,8 +502,9 @@ static void motor_foc_task(void *) {
                 save_position(user_angle);
             }
             if (s_sync_pending && s_settle_cb) {
+                bool allow_on = s_sync_allow_on;
                 s_sync_pending = false;   // clear first so a knob nudge during the callback re-arms it
-                s_settle_cb(user_angle);
+                s_settle_cb(user_angle, allow_on);
             }
         }
 
@@ -442,8 +533,9 @@ void motor_nudge_target_angle(float d_rad) {
     s_target_angle = clamp_angle(s_target_angle + d_rad);
     portEXIT_CRITICAL(&s_target_mux);
 }
-void motor_request_matter_sync_on_settle() { s_sync_pending = true; }
-void motor_set_settle_callback(void (*cb)(float)) { s_settle_cb = cb; }
+void motor_request_matter_sync_on_settle() { s_sync_allow_on = true; s_sync_pending = true; }
+void motor_set_settle_callback(void (*cb)(float, bool)) { s_settle_cb = cb; }
+void motor_request_homing() { s_home_request = true; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }
 
 void motor_set_motion_velocity(float rad_per_sec) {

@@ -86,12 +86,19 @@ constexpr int16_t  KNOB_CT_STEP_MIREDS = 10;  // CT mode: full warm↔cool sweep
 // Per-tick CT slew so Google Home slider drags (which arrive as instant attribute snaps with TransitionTime=0) fade visually over ~600 ms instead of stepping.
 constexpr uint16_t CT_FADE_STEP_MIREDS = 5;
 
-// Button: 1 tap = Matter OnOff toggle | 2 taps = cycle knob mode (motor → brightness → CT) | 3 taps = speed preset | hold ≥9 s = factory reset.
+// Button: 1 tap = Matter OnOff toggle | 2 taps = cycle knob mode (motor → brightness → CT) | 3 taps = speed preset.
+// Hold ≥5 s (3 blinks) then release = re-home; keep holding to ≥15 s (5 blinks) = factory reset.
 constexpr uint32_t BTN_DEBOUNCE_MS           = 30;
 constexpr uint32_t BTN_CLICK_MAX_MS          = 400;
 constexpr uint32_t BTN_DOUBLE_CLICK_MS       = 400;
-constexpr uint32_t BTN_LONG_PRESS_WARNING_MS = 5000;
-constexpr uint32_t BTN_FACTORY_RESET_MS      = 9000;
+constexpr uint32_t BTN_HOME_ARM_MS           = 5000;    // hold this long → arm homing (3 blinks); homing runs on release
+constexpr uint32_t BTN_FACTORY_RESET_MS      = 15000;   // keep holding to here → factory reset (5 blinks)
+
+// Runtime re-home (knob-hold gesture): drive to the off-stop and set it as logical 0.
+// Softer Uq cap than normal so the impact is gentle; faster than boot homing since FOC is already calibrated.
+constexpr float    HOMING_VELOCITY   = -8.0f;     // rad/s toward the off-stop
+constexpr float    HOMING_VOLTAGE    = 1.0f;      // Uq cap during homing (~0.2 A at 5 Ω — soft stall, no brownout)
+constexpr uint32_t HOMING_TIMEOUT_MS = 90000;     // give up if no stop is found (≈full travel at 8 rad/s + margin)
 
 // Dual-core layout: motor FOC on core 1 (no preemption from WiFi/BLE/CHIP),
 // everything else on core 0.

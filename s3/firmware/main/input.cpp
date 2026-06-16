@@ -1,5 +1,6 @@
-// Knob + button: knob acts on the current mode (motor / brightness / CT);
-// 9 s button hold wipes the whole NVS partition and restarts.
+// Knob + button: knob acts on the current mode (motor / brightness / CT).
+// Button: 1 tap = OnOff, 2 = cycle mode, 3 = speed preset; hold 5 s + release =
+// re-home, hold 15 s = factory reset (wipes the whole NVS partition + restarts).
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -86,7 +87,7 @@ static void on_triple_click() {
     ESP_LOGI(TAG, "speed=%.1f rad/s", new_v);
 }
 
-enum class BtnEvent : uint8_t { NONE, CLICK, DOUBLE_CLICK, TRIPLE_CLICK, HOLD_WARNING, FACTORY_RESET };
+enum class BtnEvent : uint8_t { NONE, CLICK, DOUBLE_CLICK, TRIPLE_CLICK, HOME_ARMED, HOME_RUN, FACTORY_RESET };
 
 static BtnEvent poll_button() {
     static bool     stable        = true;
@@ -95,7 +96,7 @@ static BtnEvent poll_button() {
     static uint32_t press_start   = 0;
     static uint32_t last_click_ms = 0;
     static uint8_t  click_count   = 0;
-    static bool     warning_fired = false;
+    static bool     home_armed    = false;   // crossed the 5 s arm threshold this press
 
     bool reading = digitalRead(PIN_BTN);
     uint32_t now = millis();
@@ -109,16 +110,20 @@ static BtnEvent poll_button() {
 
     if (now - last_change > BTN_DEBOUNCE_MS && reading != stable) {
         stable = reading;
-        if (stable == LOW) {
-            press_start   = now;
-            warning_fired = false;
-        } else {
+        if (stable == LOW) {                 // pressed
+            press_start = now;
+            home_armed  = false;
+        } else {                             // released
             uint32_t held = now - press_start;
-            if (held < BTN_CLICK_MAX_MS) {
+            if (press_start != 0 && home_armed) {
+                // Released after the 5 s arm (a 15 s hold zeroes press_start first) → run homing.
+                ev = BtnEvent::HOME_RUN;
+            } else if (held < BTN_CLICK_MAX_MS) {
                 // Each tap restarts the window; CLICK_N fires when the window closes with N pending.
                 click_count++;
                 last_click_ms = now;
             }
+            home_armed = false;
         }
     }
 
@@ -133,14 +138,16 @@ static BtnEvent poll_button() {
         last_click_ms = 0;
     }
 
+    // Hold staging: 5 s arms re-homing (blink 3, runs on release); 15 s = factory reset (blink 5).
     if (stable == LOW && press_start != 0) {
         uint32_t held = now - press_start;
-        if (held >= BTN_FACTORY_RESET_MS && warning_fired) {
+        if (held >= BTN_FACTORY_RESET_MS) {
             ev = BtnEvent::FACTORY_RESET;
-            press_start = 0;
-        } else if (held >= BTN_LONG_PRESS_WARNING_MS && !warning_fired) {
-            warning_fired = true;
-            ev = BtnEvent::HOLD_WARNING;
+            press_start = 0;                 // consumed; the release won't also run homing
+        } else if (held >= BTN_HOME_ARM_MS && !home_armed) {
+            home_armed    = true;
+            click_count   = 0;   // this press is a hold, not a tap — drop any pending tap
+            ev = BtnEvent::HOME_ARMED;
         }
     }
 
@@ -186,10 +193,15 @@ static void input_task(void *) {
         case BtnEvent::CLICK:          on_single_click(); break;
         case BtnEvent::DOUBLE_CLICK:   on_double_click(); break;
         case BtnEvent::TRIPLE_CLICK:   on_triple_click(); break;
-        case BtnEvent::HOLD_WARNING:   leds_pulse(5);
-                                       ESP_LOGW(TAG, "5 s hold — release to cancel, hold to 9 s for factory reset");
+        case BtnEvent::HOME_ARMED:     leds_pulse(3);
+                                       ESP_LOGW(TAG, "5 s hold — release to re-home, keep holding to 15 s for factory reset");
+                                       break;
+        case BtnEvent::HOME_RUN:       ESP_LOGW(TAG, "re-homing: driving to off-stop + re-zeroing");
+                                       motor_request_homing();
                                        break;
         case BtnEvent::FACTORY_RESET:  ESP_LOGW(TAG, "FACTORY RESET — wiping NVS + restarting");
+                                       leds_pulse(5);
+                                       vTaskDelay(pdMS_TO_TICKS(1500));   // let the 5 blinks show before the reboot
                                        // Nuclear wipe of the whole NVS partition. esp_matter::factory_reset()
                                        // leaves residual deferred-persistence attribute values (the LevelControl
                                        // CurrentLevel write that doesn't get cleared), which on the next-but-one

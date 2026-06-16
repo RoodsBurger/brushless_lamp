@@ -174,8 +174,8 @@ button.
 | Single click (< 400 ms, no follow-up)          | Matter `OnOff` toggle. Off → motor target 0; On → motor target = `level / 254 × ANGLE_MAX`. |
 | Double click (two clicks < 400 ms apart)       | Cycle knob mode through **motor → brightness → CT → motor**. In brightness mode the knob nudges LED `max_duty` (gamma-2.2 perceptual curve, floored at `LED_MAX_DUTY_MIN`); in CT mode it nudges color temperature by `KNOB_CT_STEP_MIREDS` and pushes the new mireds back to `ColorControl` so Google Home / Apple Home reflect the change. 1/2/3 LED blinks indicate the entered mode. |
 | Triple click (three clicks < 400 ms apart)     | Cycle through `MOTION_VELOCITY_PRESETS` (15 / 25 / 40 rad/s). LEDs flash the new preset's index + 1 times as feedback. Persisted to NVS. |
-| Hold ≥ 5 s                                     | 5 warning blinks. Release to cancel. |
-| Hold ≥ 9 s                                     | Full `nvs_flash_erase()` + restart — wipes the Matter fabric + every NVS namespace and reboots. |
+| Hold ≥ 5 s                                     | 3 blinks (re-home armed). **Release** to re-home: drives to the off-stop and sets it as logical 0. |
+| Hold ≥ 15 s                                    | 5 blinks → full `nvs_flash_erase()` + restart — wipes the Matter fabric + every NVS namespace. The cleared `homed` flag makes the next boot re-run first-boot homing. |
 | Matter Level slider                            | Sets motor target. Knob motion pushes the current level back into the Home app once the motor settles. |
 | Matter ColorTemperature slider                 | Retargets the LED warm/cool mix (153 mireds ≈ 6500 K cool, 454 mireds ≈ 2200 K warm). Persisted to NVS so it survives reboots. |
 
@@ -261,7 +261,7 @@ idf.py -p <PORT> flash monitor
 | M1    | motor + audibility sweep loop | Motor walks ±10 / ±20 / ±30 rad/s silently. Report `maxLp ≤ 300 µs` at steady state. |
 | M2    | + knob velocity-nudge + button | Knob detents adjust target velocity ±10 rad/s (cap ±50). Button zeros. Same audibility as M1. |
 | M3    | + LEDs | Knob moves motor; LEDs fade smoothly on/off with travel. Double-click cycles speed presets with 1–4 blinks of feedback. Brightness-mode click works. No motor regression. |
-| M4    | + Matter | Commission via Apple/Google/Samsung Home (see §6). Slider moves lamp, color-temp slider shifts mix, knob-driven moves push back to the app, 5 s pulse + 9 s factory-reset work. |
+| M4    | + Matter | Commission via Apple/Google/Samsung Home (see §6). Slider moves lamp, color-temp slider shifts mix, knob-driven moves push back to the app, 5 s re-home + 15 s factory-reset work. |
 
 ---
 
@@ -375,8 +375,9 @@ from scratch at the off-stop position (using the cached `foc_cal:dir` to skip th
 unreliable direction sweep), and proceeds straight into normal operation. Subsequent
 boots skip homing entirely.
 
-Factory-reset paths (button hold ≥ 9 s, remote decommission) call
-`matter_wipe_local_nvs()` which clears `foc_cal`, so the next boot re-runs homing.
+Factory-reset paths (button hold ≥ 15 s, remote decommission) clear `foc_cal`
+(the button path via a full `nvs_flash_erase()`), so the next boot re-runs homing.
+A runtime re-home (button hold ≥ 5 s, release) re-zeros without a reboot.
 
 ### Position persistence across plug/unplug
 
@@ -661,8 +662,8 @@ Scan the QR PNG from `mfg_out/out/<vid>_<pid>/<uuid>/` or enter the
 **Motor won't move, `[motor] cmd:N.NN` climbs but `vel:0`** — either the
 shaft is physically blocked (stall detection should fire within ~0.6 s —
 400 ms warm-up + 150 ms sustained-stall window — and
-snap target to shaft) or the calibration is stale. Factory-reset (9 s
-button hold) wipes `foc_cal`; a fresh direction sweep runs on next boot.
+snap target to shaft) or the calibration is stale. A 5 s button-hold re-home
+(or a 15 s factory reset, which wipes `foc_cal`) re-zeros to the off-stop.
 
 **Commissioning hangs at "Configuring device"** — the Matter controller
 needs 2.4 GHz WiFi reachable to the S3. Apple Home additionally needs a

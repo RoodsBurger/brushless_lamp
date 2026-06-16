@@ -292,7 +292,7 @@ extern "C" void matter_push_colortemp(uint16_t mireds) {
 }
 
 // Runs on the core-1 FOC task (settle callback) — DEBUG log only, no blocking work.
-extern "C" void matter_push_level_from_angle(float angle_rad) {
+extern "C" void matter_push_level_from_angle(float angle_rad, bool allow_on) {
     if (s_endpoint_id == 0) return;
     if (angle_rad < 0.0f) angle_rad = 0.0f;
     if (angle_rad > ANGLE_MAX) angle_rad = ANGLE_MAX;
@@ -310,6 +310,10 @@ extern "C" void matter_push_level_from_angle(float angle_rad) {
         s_on_off  = false;
         force_off = true;
     } else {
+        // Only a knob raise (allow_on) may power the lamp on from off. A stall, a
+        // boot restore or a re-home that lands at a high angle must NOT turn it on
+        // — that was the "won't turn off, keeps coming back on" bug.
+        if (!s_on_off && !allow_on) return;
         // +0.5 rounding so a final knob click maps to 254 (else off-by-one shows 99% in Home).
         int lv = (angle_rad >= ANGLE_MAX)
                    ? 254
