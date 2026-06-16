@@ -284,8 +284,10 @@ esp-matter-mfg-tool \
   -n 1 \
   --target esp32s3 \
   -v 0xFFF2 -p 0x8001 \
-  --vendor-name "Rods" --product-name "BrushlessLamp" \
+  --vendor-name "Bosza" --product-name "BrushlessLamp" \
   --hw-ver 1 --hw-ver-str "m4" \
+  --serial-num "2401-786-0326" \
+  --passcode 98835698 --discriminator 2810 \
   --pai \
   --dac-in-secure-cert \
   -c  $ESP_MATTER_PATH/connectedhomeip/connectedhomeip/credentials/test/attestation/Chip-Test-PAI-FFF2-8001-Cert.pem \
@@ -296,6 +298,16 @@ esp-matter-mfg-tool \
 VID `0xFFF2` / PID `0x8001` are the CHIP test values with PAI + CD bundled
 in esp-matter's credentials tree (so no CSA signing needed for a hobby
 build). For a production run, swap for your CSA-assigned VID + PAA/PAI.
+
+`--vendor-name` becomes Basic Information `VendorName` (the Home app's
+"Manufacturer"); `--serial-num` becomes `SerialNumber`. Both providers are on
+(`CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER` + `..._DEVICE_INSTANCE_INFO_PROVIDER`),
+so these surface in the controller's device-info screen. Per-lamp convention:
+set `--serial-num` to that lamp's manual pairing code so a physical unit maps
+back to its QR. Omit `--passcode` / `--discriminator` to mint a fresh QR per
+lamp; pin them (as above) to keep an already-printed QR while changing other
+factory fields. Controllers cache Basic Information at commissioning — re-pair
+the device for a changed vendor/serial to show up.
 
 The tool writes a per-device directory:
 
