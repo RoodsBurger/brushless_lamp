@@ -561,7 +561,9 @@ CONFIG_MBEDTLS_HARDWARE_SHA=y
 # Discovery — commissionable mDNS records stay published 48 h so a retry still finds the device.
 CONFIG_ENABLE_EXTENDED_DISCOVERY=y
 
-# We don't expose SoftAP / OTA is wired through esp-matter requestor.
+# No SoftAP. Firmware updates use the self-hosted signed esp_https_ota poller
+# (see § 11), NOT the Matter OTA requestor; the requestor stays enabled only to
+# pull in the dual-OTA partition layout + esp_app_update infrastructure.
 CONFIG_ENABLE_WIFI_AP=n
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_ENABLE_OTA_REQUESTOR=y
@@ -589,8 +591,9 @@ motor_foc (prio 20, 200 µs)              main (IDF default)
   - stall detection                      input_task   (prio 3, 10 ms)
   - idle-disable                         leds_fade    (prio 2, 10 ms)
   - settle callback → Matter             leds_pulse   (prio 2, spawned)
-  - encoder ISR (same core, attached       - BT controller, NimBLE host
-    from inside this task)                 - lwIP, mDNS
+  - encoder ISR (same core, attached     ota          (prio 3, boot + 5-day)
+    from inside this task)                 - BT controller, NimBLE host
+                                           - lwIP, mDNS
                                            - LEDC writes (ledcWrite)
 ```
 
@@ -608,6 +611,7 @@ polling; core 0 is never blocked.
 | `common/motor.h/.cpp`       | FOC task, position loop, manual-velocity mode, stall detection, NVS-cached `sensor_direction`. Used verbatim by every stage. |
 | `firmware/main/input.cpp`  | Knob quadrature decoder (ISR), button state machine (click/double-click/long-press ladder), NVS-persisted speed preset. |
 | `firmware/main/leds.cpp`   | 10 ms fader task, continuous angle → duty curve with gamma 2.2, pulse feedback task (symmetric N-blink around the current state), NVS-persisted `max_duty`. |
+| `firmware/main/ota.cpp`    | Self-hosted signed-OTA poller: GitHub Releases manifest check, redirect resolution, `esp_https_ota` download + signature verify, idle-gated reboot (see § 11). |
 | `firmware/main/matter_app.cpp` | Matter node / endpoint creation, `attribute_update_cb` inbound dispatch, `matter_push_level_from_angle` outbound (with OnOff=false at level 0 → the Home app can actually show "Off"), `btInUse` weak-override. |
 | `firmware/main/main.cpp`   | `app_main` — NVS init, arduino init, wire the settle callback, start everything in an order that keeps BLE init away from the busy-wait motor task. |
 
@@ -717,3 +721,57 @@ even if our code doesn't call them. Check `s3/firmware/CMakeLists.txt`.
 The `../esp-idf/` tree is the last known-good C6 build (Phase 14c commit
 `40b9aa2`). `git checkout 40b9aa2 -- esp-idf/` reverts to it; the S3 tree
 is left untouched.
+
+---
+
+## 11. Firmware updates (self-hosted signed OTA)
+
+Deployed lamps update themselves over WiFi from GitHub Releases — no USB, no
+Matter OTA provider, no CSA certification. `firmware/main/ota.cpp` runs a
+low-priority poller that:
+
+1. **Checks** `~1 min` after every boot, then every 5 days
+   (`OTA_INITIAL_DELAY_MS` / `OTA_CHECK_INTERVAL_MS` in `config.h`).
+2. **Fetches** the manifest at `OTA_MANIFEST_URL`
+   (`releases/latest/download/manifest.json`, a tiny `{version, url}` JSON).
+3. **Compares** `manifest.version` to the compiled-in `OTA_FW_VERSION`; updates
+   only if newer.
+4. **Downloads** the image via `esp_https_ota`, which **verifies the RSA-3072
+   signature** before writing the spare OTA slot.
+5. **Reboots** into the new slot once the lamp is idle (Matter OnOff = off), so
+   an update never interrupts use.
+
+### Redirect handling
+GitHub Releases assets 302-redirect to a ~700-char presigned CDN URL that
+`esp_http_client` won't auto-follow and which overflows the default 512 B
+buffers. `ota.cpp` resolves the redirect itself (`HEAD` → `Location`) and sets
+`buffer_size`/`buffer_size_tx` to 4096/2048 on every request.
+
+### Signing (no hardware Secure Boot)
+`sdkconfig.defaults` enables `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT` +
+`CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT` (RSA scheme). Every build is
+signed; the running app verifies an OTA image's signature before applying it, so
+a spoofed URL can't push unsigned firmware. **No eFuses are burned** — fully
+reversible. The signing key `firmware/ota_signing_key.pem` is gitignored (it is
+the OTA root of trust); a backup lives at `~/Documents/BrushlessLamp-OTA-key/`.
+Losing it means deployed lamps will reject all future updates.
+
+### Cutting a release
+```sh
+./firmware/release.sh <semver> <int>      # e.g. ./firmware/release.sh 1.0.1 10001
+```
+This bumps the three version locations — `PROJECT_VER`/`PROJECT_VER_NUMBER`
+(`firmware/CMakeLists.txt`), `OTA_FW_VERSION` (`common/config.h`), and
+`CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER` (`firmware/sdkconfig.defaults`) — builds
+the signed image, publishes a `fw-<semver>` GitHub Release with
+`brushlesslamp.bin` + `manifest.json`, then commits + pushes the bump. `<int>`
+must exceed the last released version or no device updates.
+
+### Notes
+- The repo (or at least its Releases) must be **public** so lamps download
+  anonymously; a private repo would need an embedded token (insecure).
+- A lamp must be commissioned + online to update; it picks up a release on its
+  next boot or within 5 days.
+- GitHub's asset `download_count` lags by hours — use the device's serial log
+  (`OTA: image verified + staged` → boot banner `firmware v<new>`) to confirm an
+  update, not the counter.
