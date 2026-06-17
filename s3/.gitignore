@@ -9,3 +9,9 @@
 
 ## clangd index cache
 **/.cache/
+
+## OTA / secure-boot signing keys — NEVER commit (private root of trust for
+## signed OTA; losing it blocks future updates, leaking it lets anyone sign).
+**/ota_signing_key.pem
+**/*_signing_key.pem
+**/secure_boot_signing_key.pem

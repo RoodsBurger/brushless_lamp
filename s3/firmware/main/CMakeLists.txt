@@ -4,6 +4,7 @@ idf_component_register(
         "input.cpp"
         "leds.cpp"
         "matter_app.cpp"
+        "ota.cpp"
     INCLUDE_DIRS "."
     PRIV_INCLUDE_DIRS "$ENV{ESP_MATTER_PATH}/examples/common/utils"
     REQUIRES
@@ -14,6 +15,10 @@ idf_component_register(
         chip
         esp_matter
         esp_matter_console
+        esp_https_ota
+        esp_http_client
+        json
+        mbedtls
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

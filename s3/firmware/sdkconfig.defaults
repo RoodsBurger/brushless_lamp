@@ -102,6 +102,19 @@ CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
 ## Symmetric AMPDU window — RX is already 16; bring TX up to match.
 CONFIG_ESP_WIFI_TX_BA_WIN=16
 
+## --- Signed OTA images (NO hardware Secure Boot, no eFuse burn) ---
+## Every build is signed; the running app verifies the RSA-3072 signature of an
+## OTA image before applying it, so a spoofed URL can't push unsigned firmware.
+## Fully reversible — nothing is burned into eFuses. The signing key lives at
+## ota_signing_key.pem (gitignored; it is the OTA root of trust — back it up).
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="ota_signing_key.pem"
+
+## Matter SoftwareVersion mirrors the firmware/OTA version (bump per release).
+CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=154
+
 ## Skip the ~1 s ARP probe after each Wi-Fi reconnect; Matter wants the IP back fast.
 ## (Choice symbol: "ARP_CHECK=n" is ignored by kconfgen — the alternative member must be selected.)
 CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y

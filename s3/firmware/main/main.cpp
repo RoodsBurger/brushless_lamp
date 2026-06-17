@@ -13,6 +13,7 @@
 #include "leds.h"
 #include "matter_app.h"
 #include "motor.h"
+#include "ota.h"
 #include "pins.h"
 
 static const char *reset_reason_str(esp_reset_reason_t r) {
@@ -69,6 +70,7 @@ extern "C" void app_main() {
     motor_init_and_start();
     input_init();
     input_task_start();
+    ota_start();   // background signed-OTA poller (checks GitHub Releases manifest)
 
     printf("Ready. Knob = %.2f rad/detent | 1x=on/off | 2x=cycle mode (motor/brightness/CT) | 3x=speed | hold 5s=re-home | 15s=factory reset\n",
            KNOB_STEP_RAD);

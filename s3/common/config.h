@@ -105,3 +105,12 @@ constexpr uint32_t HOMING_TIMEOUT_MS = 90000;     // give up if no stop is found
 constexpr int       CORE_MOTOR           = 1;
 constexpr int       CORE_OTHERS          = 0;
 constexpr unsigned  MOTOR_TASK_PRIORITY  = 20;      // above lwIP (18), below IDF timer (22)
+
+// Self-hosted signed OTA. The task polls OTA_MANIFEST_URL and updates only when
+// the manifest's integer version exceeds OTA_FW_VERSION. Bump OTA_FW_VERSION with
+// PROJECT_VER(_NUMBER) in CMakeLists on every release (release.sh does both).
+constexpr uint32_t  OTA_FW_VERSION        = 154;                 // = PROJECT_VER 0.15.4
+constexpr uint32_t  OTA_INITIAL_DELAY_MS  = 60000;                   // first check ~1 min after each boot (so a reboot = an update check)
+constexpr uint32_t  OTA_CHECK_INTERVAL_MS = 5u * 24 * 60 * 60 * 1000; // then re-check every 5 days while running
+constexpr const char *OTA_MANIFEST_URL =
+    "https://github.com/RoodsBurger/brushless_lamp/releases/latest/download/manifest.json";
