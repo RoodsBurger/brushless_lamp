@@ -8,7 +8,8 @@
 # then commits + pushes the version bump. Deployed lamps poll the release
 # manifest and self-update (see s3/firmware/main/ota.cpp). <int> must exceed the
 # currently-released version or no device will update.
-set -euo pipefail
+# No `set -u`: IDF/esp-matter export.sh reference unbound vars internally.
+set -eo pipefail
 
 VER="${1:?usage: release.sh <semver e.g. 0.15.10> <int e.g. 160>}"
 NUM="${2:?usage: release.sh <semver> <int>}"
@@ -16,10 +17,15 @@ REPO="RoodsBurger/brushless_lamp"
 SRC="/Users/rodolfo/Documents/Personal Projects/BrushlessLamp"
 SHADOW="$HOME/esp/brushlesslamp-s3"
 
-# Toolchain: anaconda python3.12 for idf.py, homebrew for gh.
+# Toolchain: anaconda python3.12 for idf.py, homebrew for gh. The export scripts
+# return non-zero benignly, so source with -e off, then verify the env is live.
 export PATH="/opt/anaconda3/bin:/opt/homebrew/bin:$PATH"
-source ~/esp/esp-idf-v5.5.4/export.sh >/dev/null
-source ~/esp/esp-matter/export.sh   >/dev/null
+set +e
+source ~/esp/esp-idf-v5.5.4/export.sh >/dev/null 2>&1
+source ~/esp/esp-matter/export.sh     >/dev/null 2>&1
+set -e
+: "${IDF_PATH:?esp-idf export.sh failed — check ~/esp/esp-idf-v5.5.4}"
+: "${ESP_MATTER_PATH:?esp-matter export.sh failed — check ~/esp/esp-matter}"
 
 echo "==> bump version -> $VER ($NUM)"
 sed -i '' "s/set(PROJECT_VER \".*\")/set(PROJECT_VER \"$VER\")/"            "$SRC/s3/firmware/CMakeLists.txt"
