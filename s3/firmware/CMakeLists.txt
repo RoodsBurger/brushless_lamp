@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
-set(PROJECT_VER "1.0.1")
-set(PROJECT_VER_NUMBER 10001)
+set(PROJECT_VER "1.0.2")
+set(PROJECT_VER_NUMBER 10002)
 
 ## Matter uses its own toolchain layer, so ESP_MATTER_PATH must be set before
 ## project(). Source ~/esp/esp-matter/export.sh before running idf.py build.

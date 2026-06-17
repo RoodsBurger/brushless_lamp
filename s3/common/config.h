@@ -109,7 +109,7 @@ constexpr unsigned  MOTOR_TASK_PRIORITY  = 20;      // above lwIP (18), below ID
 // Self-hosted signed OTA. The task polls OTA_MANIFEST_URL and updates only when
 // the manifest's integer version exceeds OTA_FW_VERSION. Bump OTA_FW_VERSION with
 // PROJECT_VER(_NUMBER) in CMakeLists on every release (release.sh does both).
-constexpr uint32_t  OTA_FW_VERSION        = 10001;                 // = PROJECT_VER 1.0.1
+constexpr uint32_t  OTA_FW_VERSION        = 10002;                 // = PROJECT_VER 1.0.2
 constexpr uint32_t  OTA_INITIAL_DELAY_MS  = 60000;                   // first check ~1 min after each boot (so a reboot = an update check)
 constexpr uint32_t  OTA_CHECK_INTERVAL_MS = 5u * 24 * 60 * 60 * 1000; // then re-check every 5 days while running
 constexpr const char *OTA_MANIFEST_URL =
