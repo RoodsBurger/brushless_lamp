@@ -21,7 +21,6 @@
 
 #include "ota.h"
 #include "config.h"
-#include "matter_app.h"
 #include "motor.h"
 
 static const char *TAG = "ota";

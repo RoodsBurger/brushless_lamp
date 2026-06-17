@@ -130,6 +130,7 @@ static bool run_first_boot_homing() {
     constexpr float    HOMING_VOLTAGE    = 1.0f;    // very low Uq cap — soft impact at the off-stop
 
     ESP_LOGI(TAG, "first-boot homing: driving lead screw toward off-stop");
+    s_idle = false;                       // homing in progress — OTA must not reboot
     float saved_vlimit = s_motor.voltage_limit;
     s_motor.updateVoltageLimit(HOMING_VOLTAGE);   // also re-clamps PID anti-windup, unlike a raw field write
     s_motor.enable();
@@ -374,6 +375,7 @@ static void motor_foc_task(void *) {
     }
     s_shaft_angle_cached = s_motor.shaft_angle - s_home_offset;
     s_motor.disable();   // boot idle; first target change wakes the task
+    s_idle = true;       // parked baseline regardless of the homing path above
 
     float    commanded_vel     = 0.0f;
     float    parked_angle      = s_shaft_angle_cached;   // wake reference while disabled

@@ -177,7 +177,7 @@ button.
 | Hold ≥ 5 s                                     | 3 blinks (re-home armed). **Release** to re-home: drives to the off-stop and sets it as logical 0. |
 | Hold ≥ 15 s                                    | 5 blinks → full `nvs_flash_erase()` + restart — wipes the Matter fabric + every NVS namespace. The cleared `homed` flag makes the next boot re-run first-boot homing. |
 | Matter Level slider                            | Sets motor target. Knob motion pushes the current level back into the Home app once the motor settles. |
-| Matter ColorTemperature slider                 | Retargets the LED warm/cool mix (153 mireds ≈ 6500 K cool, 454 mireds ≈ 2200 K warm). Persisted to NVS so it survives reboots. |
+| Matter ColorTemperature slider                 | Retargets the LED warm/cool mix. Advertised range 111–588 mireds (~9000 K cool – ~1800 K warm) so every Home-app preset incl. Candlelight is accepted; the physical LEDs render across ~6500–2200 K (153–454 mireds) and clamp beyond. Persisted to NVS. |
 
 ---
 
@@ -652,7 +652,7 @@ knob turn           │                            │                │
 |------------|-----------|----------------------------------|---------|
 | `foc_cal`  | `dir`     | `motor_foc_task`                 | cached `sensor_direction` (±1). Present after first successful `initFOC()`; skips the direction sweep on subsequent boots. |
 | `leds`     | `maxduty` | `leds_fader_task` (debounced)    | user-selected brightness, persists across reboots. Floored at `LED_MAX_DUTY_MIN`. |
-| `leds`     | `ct`      | `leds_fader_task` (debounced)    | last color temperature in mireds, persists across reboots. Clamped to `[COLORTEMP_MIN, COLORTEMP_MAX]`; default `370` (≈2700 K, Google Home "Soft White"). |
+| `leds`     | `ct`      | `leds_fader_task` (debounced)    | last color temperature in mireds, persists across reboots. Clamped to the advertised `[COLORTEMP_ADVERTISED_MIN, COLORTEMP_ADVERTISED_MAX]` (111–588); default `370` (≈2700 K, Google Home "Soft White"). |
 | `input`    | `spd_idx` | `input_task` triple-click handler | selected speed preset index (0..2). |
 | `chip-*`   | —         | CHIP stack                       | Matter fabric, counters, NOC. `esp_matter::factory_reset` wipes everything in this NVS partition. |
 
@@ -738,8 +738,11 @@ low-priority poller that:
    only if newer.
 4. **Downloads** the image via `esp_https_ota`, which **verifies the RSA-3072
    signature** before writing the spare OTA slot.
-5. **Reboots** into the new slot once the lamp is idle (Matter OnOff = off), so
-   an update never interrupts use.
+5. **Reboots** into the new slot only once the core is physically down (shaft
+   angle below `OTA_REBOOT_MAX_ANGLE_RAD`, LED off) **and** the motor is parked
+   with its position saved — a physical check, not Matter OnOff, so a reboot
+   never lands mid-travel and corrupts the saved zero. This is the only
+   `esp_restart()` during normal operation.
 
 ### Redirect handling
 GitHub Releases assets 302-redirect to a ~700-char presigned CDN URL that

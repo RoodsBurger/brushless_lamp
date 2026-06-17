@@ -123,13 +123,3 @@ constexpr const char *OTA_MANIFEST_URL =
 // this → LED off) AND the motor is parked. A physical check, not Matter OnOff, so
 // a state mismatch can't reboot while the lamp is still raised.
 constexpr float     OTA_REBOOT_MAX_ANGLE_RAD = 0.5f;
-
-// WiFi/Matter self-heal. CHIP retries association every 100 ms but can wedge
-// after AP loss (esp_wifi_connect → ESP_ERR_WIFI_CONN, "Failed to get configured
-// network 0x0500300F"); a full reboot reinitializes the WiFi stack and clears it.
-// Only fires while commissioned. Reboots at _TIMEOUT_ if the lamp is idle (so it
-// never interrupts local knob/motor use, which works offline), or at _HARD_
-// regardless for always-on lamps. Position restores from NVS, so a reboot is cheap.
-constexpr uint32_t NET_WATCHDOG_POLL_MS    = 30000;            // connectivity check cadence
-constexpr uint32_t NET_WATCHDOG_TIMEOUT_MS = 10u * 60 * 1000;  // disconnected + idle → reboot
-constexpr uint32_t NET_WATCHDOG_HARD_MS    = 30u * 60 * 1000;  // disconnected this long → reboot even if on
