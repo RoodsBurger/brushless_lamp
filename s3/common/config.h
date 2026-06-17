@@ -76,12 +76,17 @@ constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness 
 constexpr uint16_t LED_FADE_STEP        = 4;        // 10-bit duty units per fader tick (full 0..1023 sweep ≈ 2.56 s)
 constexpr uint32_t LED_FADE_PERIOD_MS   = 10;
 constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal knob steps feel visually equal
-// Color temperature blend: WW = (ct-MIN)*max/span, CW = (MAX-ct)*max/span.
-// 153 (≈6500 K cool) and 454 (≈2200 K warm) match the CHIP reference lighting-app's
-// ColorTempPhysicalMin/MaxMireds — Google Home's slider sweeps that exact range.
-constexpr uint16_t COLORTEMP_DEFAULT = 370;   // Soft White (~2700 K), the 2nd-warmest Google Home preset
-constexpr uint16_t COLORTEMP_MIN     = 153;
-constexpr uint16_t COLORTEMP_MAX     = 454;
+// Color temperature. The LED blend is calibrated to the real LEDs — CW ≈ 6500 K
+// (153 mireds), WW ≈ 2200 K (454 mireds); ct_to_targets renders across [MIN, MAX]
+// so everyday presets (Soft White, etc.) keep their true color. We ADVERTISE a
+// WIDER range to Matter so Google/Apple's full preset set — coolest (~9000 K) and
+// warmest ("Candlelight" ~1800 K) — is accepted and stays selected; values past
+// the physical [MIN, MAX] just render as full cool- / warm-white.
+constexpr uint16_t COLORTEMP_DEFAULT        = 370;   // Soft White (~2700 K), the 2nd-warmest Google Home preset
+constexpr uint16_t COLORTEMP_MIN            = 153;   // 6500 K — physical cool (CW); LED blend cool anchor
+constexpr uint16_t COLORTEMP_MAX            = 454;   // 2200 K — physical warm (WW); LED blend warm anchor
+constexpr uint16_t COLORTEMP_ADVERTISED_MIN = 111;   // 9000 K — advertised cool min (covers Google's coolest)
+constexpr uint16_t COLORTEMP_ADVERTISED_MAX = 588;   // 1700 K — advertised warm max (covers candlelight)
 constexpr int16_t  KNOB_CT_STEP_MIREDS = 10;  // CT mode: full warm↔cool sweep takes ~30 detents (≈1¼ knob rotations)
 // Per-tick CT slew so Google Home slider drags (which arrive as instant attribute snaps with TransitionTime=0) fade visually over ~600 ms instead of stepping.
 constexpr uint16_t CT_FADE_STEP_MIREDS = 5;

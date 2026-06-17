@@ -187,9 +187,9 @@ void matter_app_init() {
     // ColorCapabilities bit 4 = ColorTemperature supported; Google Home reads this + Physical Min/Max to render the slider.
     lc.color_control.color_capabilities                                  = 0x0010;
     lc.color_control_color_temperature.color_temperature_mireds          = COLORTEMP_DEFAULT;
-    lc.color_control_color_temperature.color_temp_physical_min_mireds    = COLORTEMP_MIN;
-    lc.color_control_color_temperature.color_temp_physical_max_mireds    = COLORTEMP_MAX;
-    lc.color_control_color_temperature.couple_color_temp_to_level_min_mireds = COLORTEMP_MIN;
+    lc.color_control_color_temperature.color_temp_physical_min_mireds    = COLORTEMP_ADVERTISED_MIN;
+    lc.color_control_color_temperature.color_temp_physical_max_mireds    = COLORTEMP_ADVERTISED_MAX;
+    lc.color_control_color_temperature.couple_color_temp_to_level_min_mireds = COLORTEMP_ADVERTISED_MIN;
     lc.color_control_color_temperature.start_up_color_temperature_mireds = nullptr;   // resume last persisted
 
     // Single device type only. Also listing the Dimmable / On-Off subset types

@@ -107,7 +107,7 @@ void leds_init() {
         }
         uint16_t saved_ct = 0;
         if (nvs_get_u16(h, LED_NVS_KEY_CT, &saved_ct) == ESP_OK &&
-            saved_ct >= COLORTEMP_MIN && saved_ct <= COLORTEMP_MAX) {
+            saved_ct >= COLORTEMP_ADVERTISED_MIN && saved_ct <= COLORTEMP_ADVERTISED_MAX) {
             s_colortemp_target = saved_ct;
         }
         nvs_close(h);
@@ -148,10 +148,10 @@ static void try_flush_ct_save(uint32_t now_ms) {
 }
 
 void leds_set_colortemp(uint16_t mireds) {
-    // Clamp before persisting: leds_init rejects out-of-range NVS values, so an
-    // unclamped inbound write would silently reset to default on the next boot.
-    if (mireds < COLORTEMP_MIN) mireds = COLORTEMP_MIN;
-    if (mireds > COLORTEMP_MAX) mireds = COLORTEMP_MAX;
+    // Matter inbound: accept up to the advertised max so warm presets (candlelight)
+    // stick; ct_to_targets renders anything past COLORTEMP_MAX as full warm-white.
+    if (mireds < COLORTEMP_ADVERTISED_MIN)  mireds = COLORTEMP_ADVERTISED_MIN;
+    if (mireds > COLORTEMP_ADVERTISED_MAX)  mireds = COLORTEMP_ADVERTISED_MAX;
     s_colortemp_target = mireds;
     s_ct_save_pending_ms = millis();
 }
