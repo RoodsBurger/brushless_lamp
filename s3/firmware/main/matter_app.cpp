@@ -13,7 +13,10 @@
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <platform/CommissionableDataProvider.h>
+#include <platform/ConnectivityManager.h>
 #include <platform/DeviceInstanceInfoProvider.h>
+
+#include <esp_timer.h>
 
 #include <nvs.h>
 
@@ -135,6 +138,32 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     }
 }
 
+// Self-heal: while commissioned, if the WiFi station stays disconnected past the
+// grace window (CHIP's 100 ms reconnect can wedge after AP loss), reboot to
+// reinitialize the WiFi stack. Reboots once the lamp is idle, or after a hard cap.
+static void net_watchdog_task(void *) {
+    uint32_t down_since_ms = 0;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(NET_WATCHDOG_POLL_MS));
+        bool commissioned, wifi_up;
+        chip::DeviceLayer::PlatformMgr().LockChipStack();
+        commissioned = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
+        wifi_up      = chip::DeviceLayer::ConnectivityMgr().IsWiFiStationConnected();
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+        if (!commissioned || wifi_up) { down_since_ms = 0; continue; }
+
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        if (down_since_ms == 0) { down_since_ms = now; continue; }
+        uint32_t down = now - down_since_ms;
+        if ((down >= NET_WATCHDOG_TIMEOUT_MS && !s_on_off) || down >= NET_WATCHDOG_HARD_MS) {
+            ESP_LOGW(TAG, "WiFi down %us while commissioned — rebooting to recover",
+                     (unsigned)(down / 1000));
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
+    }
+}
+
 void matter_app_init() {
     node::config_t node_config;
     node_t *node = node::create(&node_config, attribute_update_cb, identification_cb);
@@ -229,6 +258,8 @@ void matter_app_init() {
         printf("[matter] commissioned: %u fabric(s)\n",
                (unsigned)chip::Server::GetInstance().GetFabricTable().FabricCount());
     }
+
+    xTaskCreatePinnedToCore(net_watchdog_task, "net_wd", 4096, nullptr, 1, nullptr, CORE_OTHERS);
 }
 
 extern "C" bool matter_get_on_off(void) { return s_on_off; }
