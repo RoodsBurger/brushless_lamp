@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <driver/gpio.h>
+#include <esp_app_desc.h>
 #include <esp_private/rtc_clk.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
@@ -60,6 +61,7 @@ extern "C" void app_main() {
     printf("\n=== BrushlessLamp (S3) ===\n");
     printf("[boot] reset_reason=%s (%d)\n",
            reset_reason_str(esp_reset_reason()), (int)esp_reset_reason());
+    printf("[boot] firmware v%s\n", esp_app_get_description()->version);
 
     motor_set_settle_callback(matter_push_level_from_angle);
 

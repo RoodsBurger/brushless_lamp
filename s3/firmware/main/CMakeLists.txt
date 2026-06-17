@@ -19,6 +19,7 @@ idf_component_register(
         esp_http_client
         json
         mbedtls
+        esp_app_format
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
