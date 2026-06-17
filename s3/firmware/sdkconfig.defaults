@@ -113,7 +113,7 @@ CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
 CONFIG_SECURE_BOOT_SIGNING_KEY="ota_signing_key.pem"
 
 ## Matter SoftwareVersion mirrors the firmware/OTA version (bump per release).
-CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=10003
+CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER=10004
 
 ## Skip the ~1 s ARP probe after each Wi-Fi reconnect; Matter wants the IP back fast.
 ## (Choice symbol: "ARP_CHECK=n" is ignored by kconfgen — the alternative member must be selected.)
