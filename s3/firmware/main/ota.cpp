@@ -147,11 +147,13 @@ static void ota_task(void *) {
         if (fetch_manifest(&latest, url, sizeof(url))) {
             ESP_LOGI(TAG, "manifest version=%u, running=%u", latest, (unsigned)OTA_FW_VERSION);
             if (latest > OTA_FW_VERSION && download_and_stage(url)) {
-                // Apply only when off AND the motor is fully parked — rebooting
-                // mid-descent (e.g. right after Matter turns it off) would corrupt
-                // the saved zero, since the position isn't persisted until it settles.
-                while (matter_get_on_off() || !motor_is_idle()) vTaskDelay(pdMS_TO_TICKS(2000));
-                ESP_LOGW(TAG, "lamp off + motor parked — rebooting into updated firmware");
+                // Apply only when the core is physically down (LED off) AND the motor
+                // is parked + position saved — checking the real shaft angle, not Matter
+                // OnOff (which can read "off" while the core is still raised), so a reboot
+                // never lands mid-travel and corrupts the saved zero.
+                while (!motor_is_idle() || motor_get_shaft_angle() > OTA_REBOOT_MAX_ANGLE_RAD)
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                ESP_LOGW(TAG, "core down + motor parked — rebooting into updated firmware");
                 vTaskDelay(pdMS_TO_TICKS(500));
                 esp_restart();
             }

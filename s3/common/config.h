@@ -119,6 +119,10 @@ constexpr uint32_t  OTA_INITIAL_DELAY_MS  = 60000;                   // first ch
 constexpr uint32_t  OTA_CHECK_INTERVAL_MS = 5u * 24 * 60 * 60 * 1000; // then re-check every 5 days while running
 constexpr const char *OTA_MANIFEST_URL =
     "https://github.com/RoodsBurger/brushless_lamp/releases/latest/download/manifest.json";
+// OTA reboots only when the core is essentially at the bottom (shaft angle below
+// this → LED off) AND the motor is parked. A physical check, not Matter OnOff, so
+// a state mismatch can't reboot while the lamp is still raised.
+constexpr float     OTA_REBOOT_MAX_ANGLE_RAD = 0.5f;
 
 // WiFi/Matter self-heal. CHIP retries association every 100 ms but can wedge
 // after AP loss (esp_wifi_connect → ESP_ERR_WIFI_CONN, "Failed to get configured
