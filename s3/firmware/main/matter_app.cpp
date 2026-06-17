@@ -140,6 +140,14 @@ void matter_app_init() {
     node_t *node = node::create(&node_config, attribute_update_cb, identification_cb);
     if (!node) { ESP_LOGE(TAG, "node::create failed; restarting"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); }
 
+    // esp-matter's root basic_information omits the optional SerialNumber attribute, so add it;
+    // ATTRIBUTE_FLAG_MANAGED_INTERNALLY makes it read the chip-factory serial-num like vendor_name does.
+    if (endpoint_t *root_ep = endpoint::get(node, 0)) {
+        if (cluster_t *bi = cluster::get(root_ep, BasicInformation::Id)) {
+            cluster::basic_information::attribute::create_serial_number(bi, nullptr, 0);
+        }
+    }
+
     color_temperature_light::config_t lc;
     lc.on_off.on_off                         = false;
     lc.on_off_lighting.start_up_on_off       = nullptr;
