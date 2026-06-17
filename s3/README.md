@@ -286,8 +286,7 @@ esp-matter-mfg-tool \
   -v 0xFFF2 -p 0x8001 \
   --vendor-name "Bosza" --product-name "BrushlessLamp" \
   --hw-ver 1 --hw-ver-str "m4" \
-  --serial-num "2401-786-0326" \
-  --passcode 98835698 --discriminator 2810 \
+  --serial-num "<this lamp's manual pairing code>" \
   --pai \
   --dac-in-secure-cert \
   -c  $ESP_MATTER_PATH/connectedhomeip/connectedhomeip/credentials/test/attestation/Chip-Test-PAI-FFF2-8001-Cert.pem \
@@ -305,9 +304,11 @@ build). For a production run, swap for your CSA-assigned VID + PAA/PAI.
 so these surface in the controller's device-info screen. Per-lamp convention:
 set `--serial-num` to that lamp's manual pairing code so a physical unit maps
 back to its QR. Omit `--passcode` / `--discriminator` to mint a fresh QR per
-lamp; pin them (as above) to keep an already-printed QR while changing other
-factory fields. Controllers cache Basic Information at commissioning — re-pair
-the device for a changed vendor/serial to show up.
+lamp; pin them (pass explicit `--passcode`/`--discriminator` values) to keep an
+already-printed QR while changing other factory fields. Never commit real
+passcodes/discriminators — they're per-device commissioning secrets. Controllers
+cache Basic Information at commissioning — re-pair the device for a changed
+vendor/serial to show up.
 
 The tool writes a per-device directory:
 
