@@ -45,6 +45,9 @@ static void          (*s_settle_cb)(float, bool) = nullptr;
 // physical position carries across plug/unplug (incremental encoder otherwise resets to 0).
 static float           s_home_offset           = 0.0f;
 static float           s_last_saved_position   = NAN;
+// True while the motor is parked (disabled, at rest, position saved). OTA waits on
+// this so a reboot never interrupts mid-travel and corrupts the saved zero.
+static volatile bool   s_idle                  = true;
 
 // Runtime cruise cap, cycled by triple-click through MOTION_VELOCITY_PRESETS.
 static volatile float  s_motion_velocity = MOTION_VELOCITY;
@@ -195,6 +198,7 @@ static bool run_first_boot_homing() {
 // on the FOC task, blocking the position loop for the descent.
 static void run_runtime_homing() {
     ESP_LOGW(TAG, "runtime homing: driving to off-stop");
+    s_idle = false;                       // homing in progress — OTA must not reboot
     float saved_vlimit = s_motor.voltage_limit;
     s_motor.updateVoltageLimit(HOMING_VOLTAGE);
     digitalWrite(PIN_NSP, HIGH);
@@ -259,6 +263,7 @@ static void run_runtime_homing() {
     s_sync_pending  = true;           // push the new 0/off state to Matter on the next idle
     ESP_LOGW(TAG, "runtime homing: %s; re-zeroed (shaft=%.3f)",
              stalled ? "stalled at stop" : "TIMEOUT — no stop found", s_home_offset);
+    s_idle = true;                        // parked at 0 + saved — safe to reboot again
 }
 
 static void motor_foc_task(void *) {
@@ -491,6 +496,7 @@ static void motor_foc_task(void *) {
             digitalWrite(PIN_NSP, HIGH);     // wake from idle sleep
             delayMicroseconds(1100);         // DRV8313 tWAKE ≈ 1 ms before PWM resumes
             s_motor.enable();                // enable() also resets the PIDs
+            s_idle = false;                  // moving — OTA must not reboot now
         } else if (!should_enable && s_motor.enabled) {
             s_motor.disable();
             // Sleep the driver: outputs Hi-Z (zero idle drag), ~0.5 mA vs 1-5 mA active, latched faults clear.
@@ -506,6 +512,7 @@ static void motor_foc_task(void *) {
                 s_sync_pending = false;   // clear first so a knob nudge during the callback re-arms it
                 s_settle_cb(user_angle, allow_on);
             }
+            s_idle = true;                   // parked + position saved — safe to reboot for OTA
         }
 
         // While disabled these only refresh sensor state — keeps user_angle live so
@@ -537,6 +544,7 @@ void motor_request_matter_sync_on_settle() { s_sync_allow_on = true; s_sync_pend
 void motor_set_settle_callback(void (*cb)(float, bool)) { s_settle_cb = cb; }
 void motor_request_homing() { s_home_request = true; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }
+bool  motor_is_idle()            { return s_idle; }
 
 void motor_set_motion_velocity(float rad_per_sec) {
     if (rad_per_sec <= 0.0f) { s_motion_velocity = MOTION_VELOCITY; return; }

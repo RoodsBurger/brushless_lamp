@@ -10,6 +10,10 @@ void  motor_set_target_angle(float rad);      // absolute target, clamped to [0,
 void  motor_nudge_target_angle(float d_rad);  // knob-driven relative tweak
 float motor_get_shaft_angle();
 
+// True when the motor is parked (disabled, at rest, last position saved to NVS).
+// OTA waits on this so a reboot never interrupts mid-travel and corrupts the zero.
+bool  motor_is_idle();
+
 // Fires on idle-disable entry, ON THE CORE-1 FOC TASK — keep it short, no blocking
 // I/O or INFO logs (USB-CDC backpressure can stall the caller for seconds).
 // allow_on = may this settle turn the lamp ON (a knob raise) — false for stalls,
