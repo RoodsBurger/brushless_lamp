@@ -84,7 +84,7 @@ constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal
 // the physical [MIN, MAX] just render as full cool- / warm-white.
 constexpr uint16_t COLORTEMP_DEFAULT        = 370;   // Soft White (~2700 K), the 2nd-warmest Google Home preset
 constexpr uint16_t COLORTEMP_MIN            = 153;   // 6500 K — physical cool (CW); LED blend cool anchor
-constexpr uint16_t COLORTEMP_MAX            = 588;   // 1700 K — physical warm (WW); matches warmest Google Home preset (Candlelight)
+constexpr uint16_t COLORTEMP_MAX            = 454;   // 2200 K — physical warm (WW); LED blend warm anchor
 constexpr uint16_t COLORTEMP_ADVERTISED_MIN = 111;   // 9000 K — advertised cool min (covers Google's coolest)
 constexpr uint16_t COLORTEMP_ADVERTISED_MAX = 588;   // 1700 K — advertised warm max (covers candlelight)
 constexpr int16_t  KNOB_CT_STEP_MIREDS = 10;  // CT mode: full warm↔cool sweep takes ~30 detents (≈1¼ knob rotations)
