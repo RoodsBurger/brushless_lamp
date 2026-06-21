@@ -134,10 +134,10 @@ Single-stage synchronous buck, 4.5–36 V in, 3 A, SOT-23-6. FB Vref = 0.6 V.
 | Ref | Value / Part | Purpose |
 |---|---|---|
 | F1 | 2 A **slow-blow NANO2 SMD fuse** (Littelfuse 0454002.MR, 6.1×2.7 mm; 125 V rating satisfies the ≥63 V DC need) | fault/fire protection |
-| Q1 | P-MOSFET ideal-diode, Vds ≥ 40 V, **SOT-23** (DMP3017SFG / AO3401A; DPAK if more current) | reverse-polarity, ~mV drop |
+| Q1 | P-MOSFET ideal-diode, Vds ≥ 30 V, **SOT-23** (AO3401A; DPAK if more current) | reverse-polarity, ~mV drop |
 | R_Q1 | 100 kΩ | Q1 gate pulldown |
 | D_Q1 | **10 V Zener** gate→**source** (SOD-123, BZT52C10) | clamp Vgs (AO3401A Vgs abs-max is ±12 V) |
-| TVS1 | SMBJ28A (SMB, 28 V standoff, VC 45.4 V at full Ipp, 600 W) | 24 V transient clamp — clamps small/typical surges (~35 V) below the buck's 40 V abs-max; at full rated surge VC exceeds it — accepted residual risk behind fuse + FET impedance |
+| TVS1 | SMBJ28A (SMB, 28 V standoff, VC 45.4 V at full Ipp, 600 W) | 24 V transient clamp — clamps small/typical surges (~35 V) below the buck's 38 V abs-max; at full rated surge VC exceeds it — accepted residual risk behind fuse + FET impedance |
 | C_IN_BULK | 47–100 µF / 50 V **SMD** Al-electrolytic (V-chip) or Al-polymer | surge ride-through / input bulk |
 
 > **Q1 orientation:** drain = fused **input** (`P24_F`), source = **load** (`P24`) — so the

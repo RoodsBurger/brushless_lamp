@@ -1,18 +1,18 @@
 # NOTE: This is the original DESIGN-REFERENCE BOM (with rationale). For ordering/assembly use 06-bom-assembly.csv, which is reconciled 1:1 with the schematic (71 parts incl. J_EXP spare-GPIO header) and is AUTHORITATIVE. This file may list reserved/optional parts (e.g. C_DP/C_DM) not present on the generated board.
 # ALL-SMD board EXCEPT the off-board connectors, which are through-hole (keyed JST-XH 2.5mm for button/knob/LED; screw terminals for power/motor/encoder). All actives/passives are SMD = single SMT reflow; THT connectors via JLCPCB THT assembly or hand-soldered. See 02-schematic-blocks.md Block G.
 Block,RefDes,Qty,Value,Part / MPN,Package (SMD),LCSC,Notes
-MCU,U_MCU,1,ESP32-S3-WROOM-1-N8R8,ESP32-S3-WROOM-1-N8R8,Module (SMD castellated/LGA),C2913202,Exact XIAO ESP32-S3R8 silicon; use -1U for ext antenna
-MCU,C_MCU1,1,10uF,GRM21BR61E106KA,0805,C13585,3V3 bulk at module entrance
+MCU,U_MCU,1,ESP32-S3-WROOM-1-N8R8,ESP32-S3-WROOM-1-N8R8,Module (SMD castellated/LGA),C2913201,Exact XIAO ESP32-S3R8 silicon; use -1U for ext antenna
+MCU,C_MCU1,1,10uF,CL21A106KAYNNNE,0805,C15850,3V3 bulk at module entrance
 MCU,C_MCU2,1,1uF,CL10B105KB8NNN,0603,C15849,Mid-freq decoupling
 MCU,C_MCU3/4,2,0.1uF,CL05B104KO5NNN,0402,C1525,Per-pin HF decoupling
-MCU,C_MCU_BULK,1,470uF 6.3V,SMD Al-polymer (e.g. Panasonic SP-Cap / 7343),SMD D-case,,At module 3V3/GND pads; cures TX-burst brownout. SMD polymer - NOT a radial can
-MCU,D_MCU,1,ESD 3.3V,PESD3V3L1BA / equiv,SOD-323,,Power-entrance ESD
+MCU,C_MCU_BULK,1,470uF 6.3V,T520D477M006ATE025 (Kemet polymer-Ta),SMD 7343 D-case,C156460,At module 3V3/GND pads; cures TX-burst brownout. SMD polymer - NOT a radial can; LCSC stock thin
+MCU,D_MCU,1,ESD 3.3V,CDSOD323-T03SC (Bourns; alt Nexperia PESD3V3L1BA),SOD-323,C840638,Power-entrance ESD
 MCU,R_EN,1,10k,0603WAF1002,0603,C25804,EN pull-up
 MCU,C_EN,1,1uF,CL10B105KB8NNN,0603,C15849,EN RC / reset debounce
 MCU,SW_RST,1,-,SMD tactile switch (e.g. 3x4 or 3x6 mm),SMD,C318884,RESET (EN->GND) - SMD tactile
 MCU,R_BOOT,1,10k,0603WAF1002,0603,C25804,GPIO0 pull-up
 MCU,SW_BOOT,1,-,SMD tactile switch (e.g. 3x4 or 3x6 mm),SMD,C318884,BOOT (GPIO0->GND) - SMD tactile
-MCU,C_BOOT,1,100pF C0G 50V,CL05C101JB5NNNC,0402,,GPIO0 strap - MUST stay small (never ~0.1uF)
+MCU,C_BOOT,1,100pF C0G 50V,CL05C101JB5NNNC,0402,C26409,GPIO0 strap - MUST stay small (never ~0.1uF); check stock
 USB,J_USB,1,USB-C 16P,TYPE-C-31-M-12 / GCT USB4085,SMD (SMT receptacle),C165948,USB 2.0 receptacle (power+data); SMD with board-edge tabs
 USB,R_CC1,1,5.1k,0603WAF5101,0603,C23186,CC1 pull-down (Rd)
 USB,R_CC2,1,5.1k,0603WAF5101,0603,C23186,CC2 pull-down (Rd) - separate resistor
@@ -23,42 +23,44 @@ USB,C_VBUS,1,4.7uF,CL10A475KO8NNN,0603,C19666,VBUS bulk near connector
 USB,D_OR_USB,1,SS14,SS14,SMA (DO-214AC),C2480,VBUS diode-OR (optional USB-only bring-up)
 USB,C_DP/C_DM,2,DNP 10-47pF,-,0402,,Optional D+/D- EMI caps - leave unpopulated
 USB,J_PROG,1,6 net,SMD pads (or SMD 1.27mm header),SMD test pads,,"Fallback UART prog: 3V3/GND/EN/GPIO0/U0TXD(43)/U0RXD(44) - bare SMD pads, no part placed unless needed"
-PWR-PROT,F1,1,2A slow-blow,Littelfuse 0454002.MR (NANO2 slo-blo),NANO2 6.1x2.7mm,,Input fault/fire protection - slow-blow NANO2; 125V rating satisfies >=63V DC need
-PWR-PROT,Q1,1,P-MOSFET >=40V,DMP3017SFG / AO3401A / equiv,SOT-23 (SMD; DPAK if higher I),,Reverse-polarity ideal diode
+PWR-PROT,F1,1,2A slow-blow,Littelfuse 0454002.MR (NANO2 slo-blo),NANO2 6.1x2.7mm,C179005,Input fault/fire protection - slow-blow NANO2; 125V rating satisfies >=63V DC need
+PWR-PROT,Q1,1,P-MOSFET 30V,AO3401A,SOT-23,C15127,Reverse-polarity ideal diode
 PWR-PROT,R_Q1,1,100k,0603WAF1003,0603,C25803,Q1 gate pulldown
-PWR-PROT,D_Q1,1,10V Zener,BZT52C10 / equiv,SOD-123,C2687029,Clamp Q1 Vgs gate-to-source (AO3401A Vgs abs-max +/-12V); verify LCSC
-PWR-PROT,TVS1,1,SMBJ28A,SMBJ28A,SMB (DO-214AA),,24V transient clamp - clamps small/typical surges below buck 40V abs-max; at full rated surge VC 45.4V exceeds it (accepted residual risk behind fuse + FET impedance)
-PWR-PROT,C_IN_BULK,1,47-100uF 50V,SMD Al-electrolytic (V-chip) or Al-polymer,SMD (e.g. 8x10mm V-chip),,Input surge ride-through - SMD can only
+PWR-PROT,D_Q1,1,10V Zener,BZT52C10 / equiv,SOD-123,C216719,Clamp Q1 Vgs gate-to-source (AO3401A Vgs abs-max +/-12V)
+PWR-PROT,TVS1,1,SMBJ28A,SMBJ28A,SMB (DO-214AA),C178227,24V transient clamp - clamps small/typical surges below buck 38V abs-max; at full rated surge VC 45.4V exceeds it (accepted residual risk behind fuse + FET impedance)
+PWR-PROT,C_IN_BULK,1,100uF 50V,EEE-FK1H101P (Panasonic Al-elec),SMD V-chip D8x10.2mm,C178548,Input surge ride-through - SMD can only
 PWR-BUCK,U_BUCK,1,LMR51430YDDCR,LMR51430YDDCR,SOT-23-6,C5210749,24V->3.3V synchronous buck (4.5-36V,3A)
 PWR-BUCK,C_IN1,1,10uF 50V,CL32B106KBJNNN,1210,C46653,Buck input HF decoupling (derated)
-PWR-BUCK,C_IN2,1,4.7uF 50V,CL31B475KCHNNN,1206,,Splits input ripple
-PWR-BUCK,L1,1,4.7uH,74438335047 (Wurth),SMD shielded,,Buck inductor Isat>=1.5A
+PWR-BUCK,C_IN2,1,4.7uF 50V,CL31B475KBHNNNE,1206,C51205,Splits input ripple (BH=50V; CH was a typo)
+PWR-BUCK,L1,1,4.7uH,SWPA4030S4R7MT (Sunlord; alt Wurth 74438335047),SMD shielded 4x4mm,C57269,Buck inductor Isat>=1.5A
 PWR-BUCK,C_OUT1/2,2,22uF 10V,CL21A226KOQNNN,0805,C45783,Buck output caps low-ESR
-PWR-BUCK,R_FBT,1,45.3k 1%,0603WAF4532T5E,0603,,FB top -> 3.318V
+PWR-BUCK,R_FBT,1,45.3k 1%,0603WAF4532T5E,0603,C23058,FB top -> 3.318V
 PWR-BUCK,R_FBB,1,10k 1%,0603WAF1002T5E,0603,C25804,FB bottom
 PWR-BUCK,C_BOOT_B,1,100nF 16V,CL05B104KO5NNN,0402,C1525,BOOT-SW high-side drive
-PWR-BUCK,C_FF,1,22pF (opt),0402 C0G,0402,,Feed-forward across R_FBT
+PWR-BUCK,C_FF,1,22pF (opt),CL05C220JB5NNNC,0402,C70464,Feed-forward across R_FBT
 PWR-BUCK,R_ENB,1,100k,0603WAF1003,0603,C25803,Buck EN to VIN
 DRV,U_DRV,1,DRV8313PWPR,DRV8313PWPR,HTSSOP-28 PowerPAD,C92482,3-phase BLDC driver
-DRV,C_CP,1,0.01uF 50V,CL10B103KB8NNN,0603,,Charge-pump flying cap (CPL-CPH); 0.1uF also OK
+DRV,C_CP,1,0.01uF 50V,CL10B103KB8NNNC,0603,C1589,Charge-pump flying cap (CPL-CPH); 0.1uF also OK
 DRV,C_VCP,1,0.1uF 50V,CL10B104KB8NNN,0603,C1591,VCP->VM charge-pump reservoir
-DRV,C_V3P3,1,0.47uF 6.3V,CL10A474KO8NNN,0603,,V3P3 internal-LDO bypass (required)
+DRV,C_V3P3,1,0.47uF 16V,CL10B474KO8NNNC,0603,C105526,V3P3 internal-LDO bypass (required; X7R)
 DRV,C_VM1/2,2,0.1uF 50V,CL10B104KB8NNN,0603,C1591,One at each VM pin
-DRV,C_VM_BULK,1,100uF 50V,SMD Al-electrolytic (V-chip),SMD (e.g. 8x10mm),,VM bulk - 50V for 24V margin - SMD can only
+DRV,C_VM_BULK,1,100uF 50V,EEE-FK1H101P (Panasonic Al-elec),SMD V-chip D8x10.2mm,C178548,VM bulk - 50V for 24V margin - SMD can only
 DRV,R_NSLEEP,1,10k,0603WAF1002,0603,C25804,nSLEEP pull-up
 DRV,R_NRESET,1,10k,0603WAF1002,0603,C25804,nRESET pull-up (held high)
 DRV,R_NFAULT,1,10k,0603WAF1002,0603,C25804,nFAULT open-drain pull-up
 DRV,R_EN_DRV,1,10k,0603WAF1002,0603,C25804,EN default-enable; add 0R-to-3V3 jumper (SMD 0R) option
 LED,Q_WW/Q_CW,2,AO3400A,AO3400A,SOT-23,C20917,LED low-side N-MOSFET (SMD - replaces your TH MOSFETs)
-LED,R_GW/R_GC,2,33R,0603WAF330J,0603,,Gate series resistor
+LED,R_GW/R_GC,2,33R,0603WAF330JT5E,0603,C23140,Gate series resistor
 LED,R_PDW/R_PDC,2,100k,0603WAF1003,0603,C25803,Gate pull-down (keep off at boot)
 LED,D_CLW/D_CLC,2,TVS/Schottky (DNP),-,SOD-323,,Drain clamp - DNP unless ringing seen
-CONN,J_PWR,1,24V in,Screw terminal block 2P,THT (5.0/3.5mm pitch),,Mean Well V+/V-
-CONN,J_MOTOR,1,3-phase,Screw terminal block 3P,THT (5.0/3.5mm pitch),,Motor U/V/W
-CONN,J_SENSOR,1,MT6701,Screw terminal block 5P,THT (3.5mm pitch),,Encoder VCC/GND/A/B/Z (confirmed order) to bundled module (Z->GPIO14)
+CONN,J_PWR,1,24V in,KF301-5.0-2P (screw 2P),THT 5.0mm,C474881,Mean Well V+/V-
+CONN,J_MOTOR,1,3-phase,KF301-5.0-3P (screw 3P),THT 5.0mm,C474882,Motor U/V/W
+CONN,J_SENSOR-A,1,MT6701 enc,KF350-3.5-3P (screw 3P),THT 3.5mm,C474893,Encoder VCC/GND/A (3P half); gangs with J_SENSOR-B on the 5-pos SCREW5 land (no 5P 3.5mm block on LCSC); Z->GPIO14
+CONN,J_SENSOR-B,1,MT6701 enc,KF350-3.5-2P (screw 2P),THT 3.5mm,C474892,Encoder B/Z (2P half); butts against J_SENSOR-A
 CONN,R_AZ_A/B/C,3,10k (DNP),0603WAF1002T5E,0603,C25804,Optional encoder A/B/Z pull-up stiffening to 3V3 - DNP (populate only for long/noisy cable)
 CONN,J_KNOB,1,knob rotary,JST-XH 3P (B3B-XH-A),THT 2.5mm,C158012,Rotary side: ROT_A/ROT_B/GND(common)
 CONN,J_BTN,1,knob button,JST-XH 2P (B2B-XH-A),THT 2.5mm,C144395,Push-button side: BTN(SW)/GND
 CONN,J_LED,1,CCT strip,JST-XH 3P (B3B-XH-A),THT 2.5mm,C158012,V+/W/C
-MISC,LED_STATUS,1,green (opt),0603 LED,0603,,Optional status LED on GPIO21
+CONN,J_EXP,1,GPIO 1x10,2.54-1*10P (BOOMELE male header),THT 2.54mm,C57369,Spare IO1/IO2/IO13/IO38-42 + 3V3/GND; DNP for bare pads
+MISC,LED_STATUS,1,green (opt),19-217/GHC-YR1S2/3T (Everlight),0603,C72043,Optional status LED on GPIO21
 MISC,R_STATUS,1,1k (opt),0603,0603,C21190,Status LED series
