@@ -402,7 +402,8 @@ def main():
                 f'<segment><pinref part="{esc(nm)}" gate="G$1" pin="{esc(pin)}"/>'
                 f'<wire x1="{cx:.2f}" y1="{cy:.2f}" x2="{ex:.2f}" y2="{ey:.2f}" width="0.1524" layer="91"/>'
                 f'<label x="{ex:.2f}" y="{ey:.2f}" size="1.27" layer="91"/></segment>')
-    nets_xml=[f'<net name="{esc(n)}" class="0">'+"".join(nets[n])+'</net>' for n in sorted(nets)]
+    NET_CLASS={"P24":"1","P24_RAW":"1","P24_F":"1","P3V3":"2","VBUS":"2"}   # wider power copper
+    nets_xml=[f'<net name="{esc(n)}" class="{NET_CLASS.get(n,"0")}">'+"".join(nets[n])+'</net>' for n in sorted(nets)]
 
     all_layers={**real_layers,**BASE_LAYERS}
     real_lib_xml="\n".join(real[n][0] for n in REAL_FILES)
@@ -439,6 +440,8 @@ def main():
 <variantdefs/>
 <classes>
 <class number="0" name="default" width="0" drill="0"/>
+<class number="1" name="pwr24" width="0.5" drill="0"/>
+<class number="2" name="pwr3v3" width="0.4" drill="0"/>
 </classes>
 <parts>
 {chr(10).join(parts_xml)}

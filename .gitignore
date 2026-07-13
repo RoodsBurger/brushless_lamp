@@ -15,3 +15,7 @@ build/
 Icon?
 Icon
 
+__pycache__/
+*.bak
+*.gang.bak
+*.maskfix.bak
