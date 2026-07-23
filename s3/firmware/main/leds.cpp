@@ -91,6 +91,12 @@ static uint16_t step_ct_toward(uint16_t cur, uint16_t tgt) {
     /* cur > tgt */  return (uint16_t)((cur - tgt <= CT_FADE_STEP_MIREDS) ? tgt : cur - CT_FADE_STEP_MIREDS);
 }
 
+// Debounced commits — fader task flushes a pending save once it has been quiet for LED_NVS_DEBOUNCE ms. Keeps NVS flash wear to one write per gesture.
+static volatile uint32_t s_duty_save_pending_ms = 0;
+static volatile uint32_t s_ct_save_pending_ms   = 0;
+static uint8_t           s_last_saved_duty      = 0xFF;
+static uint16_t          s_last_saved_ct        = 0xFFFF;
+
 void leds_init() {
     // Explicit channels (not auto-assign) so led_write_* can address them for the hpoint offset.
     ledcAttachChannel(PIN_LED_WW, LED_PWM_FREQ_HZ, LED_PWM_RESOLUTION, LEDC_CH_WW);
@@ -112,14 +118,12 @@ void leds_init() {
         }
         nvs_close(h);
     }
+    // Seed the debounce guards from the persisted values so returning a slider to its
+    // already-saved value doesn't trigger a redundant flash write.
+    s_last_saved_duty   = s_max_duty;
+    s_last_saved_ct     = s_colortemp_target;
     s_colortemp_current = s_colortemp_target;   // no boot-time CT slew from default to persisted
 }
-
-// Debounced commits — fader task flushes a pending save once it has been quiet for LED_NVS_DEBOUNCE ms. Keeps NVS flash wear to one write per gesture.
-static volatile uint32_t s_duty_save_pending_ms = 0;
-static volatile uint32_t s_ct_save_pending_ms   = 0;
-static uint8_t           s_last_saved_duty      = 0xFF;
-static uint16_t          s_last_saved_ct        = 0xFFFF;
 static void try_flush_duty_save(uint32_t now_ms) {
     if (s_duty_save_pending_ms == 0) return;
     if (now_ms - s_duty_save_pending_ms < LED_NVS_DEBOUNCE) return;
@@ -194,7 +198,7 @@ static void leds_fader_task(void *) {
 }
 
 void leds_start_fader() {
-    xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 2048, nullptr, 2, nullptr, CORE_OTHERS);
+    xTaskCreatePinnedToCore(leds_fader_task, "leds_fade", 4096, nullptr, 2, nullptr, CORE_OTHERS);   // 4096: the task does synchronous NVS commits (flash-write call depth)
 }
 
 // N cycles of two-state alternation centered on the current visual state; ends at the original state so the fader has nothing to re-ramp.

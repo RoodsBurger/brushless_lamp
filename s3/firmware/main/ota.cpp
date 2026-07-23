@@ -157,7 +157,9 @@ static void ota_task(void *) {
                 esp_restart();
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(OTA_CHECK_INTERVAL_MS));
+        // pdMS_TO_TICKS overflows its 32-bit intermediate for multi-day values on non-SMP
+        // FreeRTOS (432e9 wraps to ~42 min); compute ticks in 64-bit — the result fits TickType_t.
+        vTaskDelay((TickType_t)((uint64_t)OTA_CHECK_INTERVAL_MS * configTICK_RATE_HZ / 1000));
     }
 }
 

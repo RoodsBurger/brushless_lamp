@@ -97,9 +97,9 @@ static esp_err_t identification_cb(identification::callback_type_t type, uint16_
     return ESP_OK;
 }
 
-static void reopen_commissioning_window() {
+static CHIP_ERROR reopen_commissioning_window() {
     auto &mgr = chip::Server::GetInstance().GetCommissioningWindowManager();
-    if (mgr.IsCommissioningWindowOpen()) return;
+    if (mgr.IsCommissioningWindowOpen()) return CHIP_NO_ERROR;
     CHIP_ERROR err = mgr.OpenBasicCommissioningWindow(
         chip::System::Clock::Seconds16(300),
         chip::CommissioningWindowAdvertisement::kAllSupported);  // BLE + DNS-SD
@@ -108,6 +108,7 @@ static void reopen_commissioning_window() {
     } else {
         ESP_LOGI(TAG, "commissioning window re-opened (300 s, BLE+DNS-SD)");
     }
+    return err;
 }
 
 static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
@@ -122,13 +123,20 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
                      chip::DeviceLayer::ConnectivityChange::kConnectivity_Established);
         break;
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
-        // NimBLE state machine often wedges after a partial commission (ble_gap_adv_set_data
-        // returns 0x5B0001E); an in-place reopen leaves the wedge. Reboot clears it and
-        // CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART re-arms commissioning on the next boot.
-        ESP_LOGW(TAG, "failsafe timer expired — rebooting to clear BLE state");
+        // Attempt 1 commonly times out on the BLE→WiFi coex handoff (Google's 60 s failsafe
+        // vs single-radio coexistence stalls). Reopen the window in place and let the
+        // controller retry — IDF 5.5.4's NimBLE no longer wedges after a partial commission
+        // the way older versions did, so a full reboot is unnecessary and only disrupts the
+        // controller's post-commission work. Reboot solely as a fallback if reopening fails;
+        // CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART then re-arms commissioning on the next boot.
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            vTaskDelay(pdMS_TO_TICKS(200));
-            esp_restart();
+            if (reopen_commissioning_window() == CHIP_NO_ERROR) {
+                ESP_LOGW(TAG, "failsafe expired — window reopened in place (no reboot)");
+            } else {
+                ESP_LOGW(TAG, "failsafe expired — reopen failed, rebooting to clear BLE state");
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+            }
         }
         break;
     case chip::DeviceLayer::DeviceEventType::kCHIPoBLEConnectionEstablished:
@@ -156,7 +164,9 @@ static void announce_nudge_work(intptr_t) {
     auto *im = chip::app::InteractionModelEngine::GetInstance();
     if (im->GetNumActiveReadHandlers(chip::app::ReadHandler::InteractionType::Subscribe) > 0) return;
     chip::app::DnssdServer::Instance().StartServer();
-    printf("[matter] commissioned but no active subscription — re-announced operational mDNS\n");
+    // Debug-level (runtime-filtered at WARN): this runs on the CHIP task and printf here would
+    // backpressure USB-CDC ~50 ms/byte when no host reads. Raise the log level to observe it.
+    ESP_LOGD(TAG, "commissioned but no active subscription — re-announced operational mDNS");
 }
 
 static void announce_nudge_task(void *) {

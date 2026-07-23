@@ -197,8 +197,9 @@ static bool run_first_boot_homing() {
 // Runtime re-home (knob-hold gesture). Drives to the off-stop at a soft Uq cap and
 // makes that physical position the new logical 0. Unlike boot homing it does NOT
 // reboot — FOC is already calibrated, so we only re-zero s_home_offset. Runs inline
-// on the FOC task, blocking the position loop for the descent.
-static void run_runtime_homing() {
+// on the FOC task, blocking the position loop for the descent. Returns true if it
+// reached the stop and re-zeroed; false on timeout (prior zero left intact).
+static bool run_runtime_homing() {
     ESP_LOGW(TAG, "runtime homing: driving to off-stop");
     s_idle = false;                       // homing in progress — OTA must not reboot
     float saved_vlimit = s_motor.voltage_limit;
@@ -254,6 +255,14 @@ static void run_runtime_homing() {
     digitalWrite(PIN_NSP, LOW);
     s_motor.updateVoltageLimit(saved_vlimit);
 
+    if (!stalled) {
+        // Timed out without reaching the off-stop — the shaft is at an arbitrary mid-travel
+        // position, so re-zeroing here would persist a wrong logical 0. Keep the prior zero.
+        ESP_LOGW(TAG, "runtime homing: TIMEOUT — no stop found; keeping prior zero");
+        s_idle = true;
+        return false;
+    }
+
     // The wedged physical position becomes logical 0; target follows so the lamp parks at the bottom.
     s_home_offset = s_motor.shaft_angle;
     portENTER_CRITICAL(&s_target_mux);
@@ -263,9 +272,9 @@ static void run_runtime_homing() {
     save_position(0.0f);
     s_sync_allow_on = false;          // homing must not turn the lamp on
     s_sync_pending  = true;           // push the new 0/off state to Matter on the next idle
-    ESP_LOGW(TAG, "runtime homing: %s; re-zeroed (shaft=%.3f)",
-             stalled ? "stalled at stop" : "TIMEOUT — no stop found", s_home_offset);
+    ESP_LOGW(TAG, "runtime homing: stalled at stop; re-zeroed (shaft=%.3f)", s_home_offset);
     s_idle = true;                        // parked at 0 + saved — safe to reboot again
+    return true;
 }
 
 static void motor_foc_task(void *) {
@@ -379,6 +388,7 @@ static void motor_foc_task(void *) {
     }
     s_shaft_angle_cached = s_motor.shaft_angle - s_home_offset;
     s_motor.disable();   // boot idle; first target change wakes the task
+    digitalWrite(PIN_NSP, LOW);   // sleep the driver: Hi-Z outputs = free shaft, not disable()'s shorted-winding brake
     s_idle = true;       // parked baseline regardless of the homing path above
 
     float    commanded_vel     = 0.0f;
@@ -393,12 +403,14 @@ static void motor_foc_task(void *) {
         // Knob-hold re-home: runs the descent inline, then re-zeros and parks idle at 0.
         if (s_home_request) {
             s_home_request = false;
-            run_runtime_homing();
+            bool rezeroed = run_runtime_homing();
             commanded_vel     = 0.0f;
             last_ramp_us      = 0;
             motion_started_ms = 0;
             stuck_since_ms    = 0;
-            parked_angle      = 0.0f;     // re-zeroed by homing
+            // Snap the wake-check baseline to 0 only if homing actually re-zeroed; on a
+            // timeout keep the current logical position so we don't wedge toward a false 0.
+            parked_angle      = rezeroed ? 0.0f : (s_motor.shaft_angle - s_home_offset);
             last_active_ms    = 0;        // (now_ms - 0) >> IDLE_DISABLE_MS → stay idle, don't wake
             next_foc_us       = micros();
             continue;
