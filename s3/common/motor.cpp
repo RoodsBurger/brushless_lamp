@@ -40,6 +40,7 @@ static volatile float  s_shaft_angle_cached    = 0.0f;
 static volatile bool   s_sync_pending          = false;
 static volatile bool   s_sync_allow_on         = false;   // may the pending settle turn the lamp ON? (knob raise only)
 static volatile bool   s_home_request          = false;   // set by motor_request_homing(), serviced on the FOC task
+static volatile bool   s_fault                 = false;   // driver/motor/FOC init failure — surfaced by the status LED
 static void          (*s_settle_cb)(float, bool) = nullptr;
 // Encoder reading that maps to user_angle=0; loaded from NVS at boot so the lead screw's
 // physical position carries across plug/unplug (incremental encoder otherwise resets to 0).
@@ -291,6 +292,7 @@ static void motor_foc_task(void *) {
     ESP_LOGI(TAG, "driver.init()=%d", drv_ok);
     if (!drv_ok) {
         ESP_LOGE(TAG, "driver init failed; halting motor task");
+        s_fault = true;
         vTaskDelete(nullptr);
     }
     s_motor.linkDriver(&s_driver);
@@ -322,6 +324,7 @@ static void motor_foc_task(void *) {
     ESP_LOGI(TAG, "motor.init()=%d", mot_ok);
     if (!mot_ok) {
         ESP_LOGE(TAG, "motor init failed; halting motor task");
+        s_fault = true;
         vTaskDelete(nullptr);
     }
 
@@ -335,6 +338,7 @@ static void motor_foc_task(void *) {
              foc_ok, s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
     if (!foc_ok) {
         ESP_LOGE(TAG, "FOC init failed; halting motor task — check encoder + driver wiring");
+        s_fault = true;
         s_motor.disable();
         vTaskDelete(nullptr);
     }
@@ -547,6 +551,7 @@ void motor_set_settle_callback(void (*cb)(float, bool)) { s_settle_cb = cb; }
 void motor_request_homing() { s_home_request = true; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }
 bool  motor_is_idle()            { return s_idle; }
+bool  motor_get_fault()          { return s_fault; }
 
 void motor_set_motion_velocity(float rad_per_sec) {
     if (rad_per_sec <= 0.0f) { s_motion_velocity = MOTION_VELOCITY; return; }

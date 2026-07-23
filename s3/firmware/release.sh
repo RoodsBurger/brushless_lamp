@@ -38,6 +38,14 @@ rsync -a --delete \
   --exclude=build --exclude=managed_components --exclude=dependencies.lock \
   --exclude=sdkconfig --exclude=sdkconfig.old --exclude=mfg_out \
   "$SRC/s3/" "$SHADOW/"
+# OTA fleet is XIAO hardware — refuse to publish a build configured for another board.
+BOARD="$(sed -n 's/^BRUSHLESSLAMP_BOARD:[A-Z]*=//p' "$SHADOW/firmware/build/CMakeCache.txt" 2>/dev/null)"
+if [ -n "$BOARD" ] && [ "$BOARD" != "xiao" ]; then
+  echo "ABORT: $SHADOW/firmware/build is configured for board '$BOARD'; the OTA fleet is xiao." >&2
+  echo "Fix:   (cd $SHADOW/firmware && idf.py -DBRUSHLESSLAMP_BOARD=xiao reconfigure)" >&2
+  exit 1
+fi
+
 # rm sdkconfig so the bumped DEVICE_SOFTWARE_VERSION_NUMBER default takes effect.
 ( cd "$SHADOW/firmware" && rm -f sdkconfig && idf.py build )
 

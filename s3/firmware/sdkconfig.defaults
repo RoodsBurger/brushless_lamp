@@ -252,3 +252,8 @@ CONFIG_ENABLE_EXTENDED_DISCOVERY=y
 ## WiFi + BT coex on the S3's single 2.4 GHz radio: PHY-coded TX/RX time limit
 ## prevents long BLE bursts from starving WiFi (and vice versa) during PASE.
 CONFIG_BT_CTRL_COEX_PHY_CODED_TX_RX_TLIM_EN=y
+
+## CASE subscriptions persist in NVS and resume after a reboot, so a power blip or
+## OTA restart doesn't leave controllers showing "offline" until they re-subscribe
+## on their own. Explicit pin of the CHIP default so an esp-matter bump can't drop it.
+CONFIG_ENABLE_PERSIST_SUBSCRIPTIONS=y

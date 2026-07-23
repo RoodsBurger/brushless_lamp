@@ -54,6 +54,10 @@ static volatile bool     s_on_off             = false;
 static volatile uint8_t  s_level              = 1;    // Matter MinLevel
 static volatile uint16_t s_color_temp_mireds  = COLORTEMP_DEFAULT;
 
+// Connectivity state mirrored for the status LED; written from CHIP events only.
+static volatile bool s_commissioned = false;
+static volatile bool s_wifi_up      = false;
+
 static void apply_state() {
     leds_set_colortemp(s_color_temp_mireds);
     float target = s_on_off ? ((float)s_level / 254.0f) * ANGLE_MAX : 0.0f;
@@ -107,9 +111,14 @@ static void reopen_commissioning_window() {
 static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
+        s_commissioned = true;
         ESP_LOGI(TAG, "commissioning complete"); break;
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
         ESP_LOGI(TAG, "IP address changed"); break;
+    case chip::DeviceLayer::DeviceEventType::kWiFiConnectivityChange:
+        s_wifi_up = (event->WiFiConnectivityChange.Result ==
+                     chip::DeviceLayer::ConnectivityChange::kConnectivity_Established);
+        break;
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
         // NimBLE state machine often wedges after a partial commission (ble_gap_adv_set_data
         // returns 0x5B0001E); an in-place reopen leaves the wedge. Reboot clears it and
@@ -127,6 +136,7 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
         ESP_LOGI(TAG, "fabric removed");
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+            s_commissioned = false;
             wipe_local_nvs();
             reopen_commissioning_window();
         }
@@ -212,6 +222,8 @@ void matter_app_init() {
         }, (intptr_t)ct);
     }
 
+    s_commissioned = (chip::Server::GetInstance().GetFabricTable().FabricCount() > 0);
+
     // Use printf, not ChipLogProgress: chip[*] INFO chatter during PASE/AddNOC backpressures USB-CDC TX and times commissioning out.
     if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
         uint16_t vid = 0, pid = 0, discriminator = 0;
@@ -232,6 +244,9 @@ void matter_app_init() {
 }
 
 extern "C" bool matter_get_on_off(void) { return s_on_off; }
+
+extern "C" bool matter_is_commissioned(void) { return s_commissioned; }
+extern "C" bool matter_is_wifi_up(void)      { return s_wifi_up; }
 
 // Button-driven OnOff toggle; mirrors what an attribute_update_cb write would do.
 namespace { struct OnOffPush { uint16_t ep; bool on; }; }

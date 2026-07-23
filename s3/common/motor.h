@@ -14,6 +14,9 @@ float motor_get_shaft_angle();
 // OTA waits on this so a reboot never interrupts mid-travel and corrupts the zero.
 bool  motor_is_idle();
 
+// True after a driver/motor/FOC init failure halted the motor task — status LED input.
+bool  motor_get_fault();
+
 // Fires on idle-disable entry, ON THE CORE-1 FOC TASK — keep it short, no blocking
 // I/O or INFO logs (USB-CDC backpressure can stall the caller for seconds).
 // allow_on = may this settle turn the lamp ON (a knob raise) — false for stalls,

@@ -27,14 +27,12 @@
 // SimpleFOC Mini breakout (no software control).
 // Teyleten notes: more GPIOs broken out so we move off the strap pins and gain
 // software EN control; GPIO 9 is unused / spare on this layout.
-// Custom-PCB notes: the all-in-one WROOM-1-N8R8 board (design package in PCB/).
-// Adds nFAULT read-back (GPIO16) and a Z-index pin (GPIO14), both wired but unused
-// by current firmware. Map mirrors PCB/01-architecture-and-pinmap.md §4 exactly.
-// *** UNVERIFIED ON HARDWARE — the board hasn't been fabbed yet. This branch is
-// compile-checked and matches the schematic net-for-net; confirm on the real
-// board at bring-up before trusting it. ***
-// Select a non-default board with `-DBRUSHLESSLAMP_BOARD_TEYLETEN=1` or
-// `-DBRUSHLESSLAMP_BOARD_CUSTOM=1` at project COMPILE_OPTIONS.
+// Custom-PCB notes: the all-in-one WROOM-1-N8R8 board (design package in PCB/),
+// verified on fabbed rev 4.3 hardware (motor, encoder, LEDs, knob, Matter).
+// nFAULT (GPIO16) feeds the status-LED fault pattern; the Z-index pin (GPIO14)
+// is wired but unused. Map mirrors PCB/01-architecture-and-pinmap.md §4 exactly.
+// Select a non-default board with `idf.py -DBRUSHLESSLAMP_BOARD=teyleten|custom
+// reconfigure` (cache option defined in firmware/CMakeLists.txt).
 
 #ifdef BRUSHLESSLAMP_BOARD_TEYLETEN
 
@@ -62,12 +60,12 @@ constexpr uint8_t PIN_BTN        = 10;   // knob push-button (active-low, INPUT_
 constexpr uint8_t PIN_LED_WW     = 11;   // warm-white LEDC
 constexpr uint8_t PIN_LED_CW     = 12;   // cool-white LEDC
 constexpr int     PIN_DRV_EN     = 15;   // DRV8313 EN (software-controlled; 0Ω-to-3V3 jumper option on board)
-constexpr int     PIN_DRV_NFAULT = 16;   // DRV8313 nFAULT (read-only, active-low) — wired but unused by current firmware
+constexpr int     PIN_DRV_NFAULT = 16;   // DRV8313 nFAULT (active-low, external pull-up) — status-LED fault input
 constexpr uint8_t PIN_NSP        = 7;    // DRV8313 nSLEEP
 constexpr uint8_t PIN_PWM_C      = 6;    // DRV8313 IN3
 constexpr uint8_t PIN_PWM_B      = 4;    // DRV8313 IN1 — swapped with A to invert rotor direction
 constexpr uint8_t PIN_PWM_A      = 5;    // DRV8313 IN2 — swapped with B to invert rotor direction
-constexpr uint8_t PIN_STATUS_LED = 21;   // optional board status LED (active-HIGH) — unused by current firmware
+constexpr uint8_t PIN_STATUS_LED = 21;   // board status LED (active-HIGH) — driven by main/status_led.cpp
 
 #else  // default: Seeed XIAO ESP32-S3
 

@@ -232,6 +232,32 @@ idf.py build
 idf.py -p <PORT> flash monitor
 ```
 
+### Board variants
+
+The pin map (`common/pins.h`) is selected by the `BRUSHLESSLAMP_BOARD` CMake cache
+option: `xiao` (default), `teyleten`, or `custom` (the all-in-one WROOM-1 PCB in
+`PCB/`). It persists per build dir; switch with:
+
+```sh
+idf.py -DBRUSHLESSLAMP_BOARD=custom reconfigure
+```
+
+Only `common` + `main` recompile on a switch. `release.sh` refuses to publish a
+non-`xiao` build — the OTA fleet is XIAO hardware and the pin maps differ.
+
+### Status LED (custom PCB only)
+
+GPIO21 drives the on-board LED (active-HIGH). `main/status_led.cpp` renders one
+pattern by priority; XIAO/Teyleten builds compile it out.
+
+| Pattern | Meaning |
+|---|---|
+| 5 Hz blink | fault — driver/motor/FOC init failed, or DRV8313 nFAULT asserted while driving |
+| solid on | booting (until Matter is up), or motor actively moving |
+| 1 Hz blink | uncommissioned — pairing window open |
+| 2.5 Hz blink | commissioned but WiFi down |
+| off | idle, operational |
+
 M1 / M2 / M3 are the staged debug scaffolds, archived under
 `s3/archive/milestones/` — same recipe, swap the stage directory. They don't
 need `esp-matter` (no Matter, no BLE), so sourcing

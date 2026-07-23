@@ -28,3 +28,11 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     ARDUINO_USB_CDC_ON_BOOT=1
     ARDUINO_USB_MODE=1
 )
+
+## Board pin-map define, scoped here + main so a board switch never rebuilds the
+## Matter stack (nothing else includes pins.h). Unset/empty variable = XIAO default.
+if(BRUSHLESSLAMP_BOARD STREQUAL "custom")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BRUSHLESSLAMP_BOARD_CUSTOM=1)
+elseif(BRUSHLESSLAMP_BOARD STREQUAL "teyleten")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BRUSHLESSLAMP_BOARD_TEYLETEN=1)
+endif()

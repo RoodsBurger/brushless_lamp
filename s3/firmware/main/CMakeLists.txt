@@ -5,6 +5,7 @@ idf_component_register(
         "leds.cpp"
         "matter_app.cpp"
         "ota.cpp"
+        "status_led.cpp"
     INCLUDE_DIRS "."
     PRIV_INCLUDE_DIRS "$ENV{ESP_MATTER_PATH}/examples/common/utils"
     REQUIRES
@@ -33,3 +34,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     ARDUINO_USB_CDC_ON_BOOT=1
     ARDUINO_USB_MODE=1
 )
+
+## Board pin-map define — mirrors common/CMakeLists.txt (see comment there).
+if(BRUSHLESSLAMP_BOARD STREQUAL "custom")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BRUSHLESSLAMP_BOARD_CUSTOM=1)
+elseif(BRUSHLESSLAMP_BOARD STREQUAL "teyleten")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BRUSHLESSLAMP_BOARD_TEYLETEN=1)
+endif()

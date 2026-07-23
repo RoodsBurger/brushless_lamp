@@ -16,6 +16,7 @@
 #include "motor.h"
 #include "ota.h"
 #include "pins.h"
+#include "status_led.h"
 
 static const char *reset_reason_str(esp_reset_reason_t r) {
     switch (r) {
@@ -39,9 +40,12 @@ extern "C" void app_main() {
     gpio_set_direction((gpio_num_t)PIN_NSP, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_NSP, 0);
 
+    // Custom board: status LED solid from power-on; state patterns take over once Matter is up.
+    status_led_init();
+
 #if !defined(BRUSHLESSLAMP_BOARD_TEYLETEN) && !defined(BRUSHLESSLAMP_BOARD_CUSTOM)
     // XIAO on-board user LED is active-LOW on GPIO 21; drive HIGH = off.
-    // (Teyleten and custom boards have no such LED; the custom board's status LED is left unmanaged at boot.)
+    // (Teyleten has no LED; the custom board's LED is driven by status_led.cpp.)
     gpio_set_direction((gpio_num_t)PIN_XIAO_USER_LED, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)PIN_XIAO_USER_LED, 1);
 #endif
@@ -68,6 +72,7 @@ extern "C" void app_main() {
     // Matter (BLE/Wi-Fi/CHIP) must come up before the FOC busy-wait pegs core 1, or CSRRequest times out (CHIP_ERROR_TIMEOUT 32).
     leds_init();
     matter_app_init();
+    status_led_set_matter_ready();
     leds_start_fader();
     motor_init_and_start();
     input_init();
