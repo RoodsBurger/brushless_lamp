@@ -10,7 +10,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <app/InteractionModelEngine.h>
 #include <app/server/CommissioningWindowManager.h>
+#include <app/server/Dnssd.h>
 #include <app/server/Server.h>
 #include <platform/CommissionableDataProvider.h>
 #include <platform/DeviceInstanceInfoProvider.h>
@@ -145,6 +147,25 @@ static void event_cb(const ChipDeviceEvent *event, intptr_t arg) {
     }
 }
 
+// Commissioned-but-unsubscribed self-heal: a controller (Google hub) that misses
+// the one-shot boot announcement never subscribes and shows the device offline
+// until the hub itself reboots. Re-broadcasting the operational DNS-SD records
+// while no subscription exists lets the wedged hub rediscover us instead.
+static void announce_nudge_work(intptr_t) {
+    if (!s_commissioned || !s_wifi_up) return;
+    auto *im = chip::app::InteractionModelEngine::GetInstance();
+    if (im->GetNumActiveReadHandlers(chip::app::ReadHandler::InteractionType::Subscribe) > 0) return;
+    chip::app::DnssdServer::Instance().StartServer();
+    printf("[matter] commissioned but no active subscription — re-announced operational mDNS\n");
+}
+
+static void announce_nudge_task(void *) {
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(120000));   // delay-first: boot's own announcement covers the first window
+        chip::DeviceLayer::PlatformMgr().ScheduleWork(announce_nudge_work, 0);
+    }
+}
+
 void matter_app_init() {
     node::config_t node_config;
     node_t *node = node::create(&node_config, attribute_update_cb, identification_cb);
@@ -209,6 +230,8 @@ void matter_app_init() {
 
     // Mains-powered: keep the modem awake so Matter commands aren't gated on the AP's DTIM interval.
     esp_wifi_set_ps(WIFI_PS_NONE);
+
+    xTaskCreate(announce_nudge_task, "mdns_nudge", 3072, nullptr, 1, nullptr);
 
     // Push the LED-side restored CT into Matter from the CHIP task — attribute::update
     // isn't safe from app_main once the stack is live.
