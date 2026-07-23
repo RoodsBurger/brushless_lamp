@@ -117,8 +117,11 @@ constexpr unsigned  MOTOR_TASK_PRIORITY  = 20;      // above lwIP (18), below ID
 constexpr uint32_t  OTA_FW_VERSION        = 10204;                 // = PROJECT_VER 1.2.4
 constexpr uint32_t  OTA_INITIAL_DELAY_MS  = 60000;                   // first check ~1 min after each boot (so a reboot = an update check)
 constexpr uint32_t  OTA_CHECK_INTERVAL_MS = 5u * 24 * 60 * 60 * 1000; // then re-check every 5 days while running
+constexpr uint32_t  OTA_RETRY_DELAY_MS    = 60u * 60 * 1000;         // failed fetch/download retries hourly instead of waiting out the full interval
+// Custom-PCB manifest. Legacy XIAO lamps poll manifest.json, which no release ships
+// anymore — their fetch 404s forever, freezing them at 1.2.3 by design.
 constexpr const char *OTA_MANIFEST_URL =
-    "https://github.com/RoodsBurger/brushless_lamp/releases/latest/download/manifest.json";
+    "https://github.com/RoodsBurger/brushless_lamp/releases/latest/download/manifest-custom.json";
 // OTA reboots only when the core is essentially at the bottom (shaft angle below
 // this → LED off) AND the motor is parked. A physical check, not Matter OnOff, so
 // a state mismatch can't reboot while the lamp is still raised.

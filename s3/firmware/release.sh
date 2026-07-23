@@ -38,27 +38,31 @@ rsync -a --delete \
   --exclude=build --exclude=managed_components --exclude=dependencies.lock \
   --exclude=sdkconfig --exclude=sdkconfig.old --exclude=mfg_out \
   "$SRC/s3/" "$SHADOW/"
-# OTA fleet is XIAO hardware — refuse to publish a build configured for another board.
+# The OTA fleet is the custom PCB. Configure the build for it explicitly and verify
+# the cache took it — publishing a binary with another board's pin map would cripple
+# every peripheral on the fleet (firmware side also refuses via the manifest board field).
+# rm sdkconfig so the bumped DEVICE_SOFTWARE_VERSION_NUMBER default takes effect.
+( cd "$SHADOW/firmware" && rm -f sdkconfig && idf.py -DBRUSHLESSLAMP_BOARD=custom build )
 BOARD="$(sed -n 's/^BRUSHLESSLAMP_BOARD:[A-Z]*=//p' "$SHADOW/firmware/build/CMakeCache.txt" 2>/dev/null)"
-if [ -n "$BOARD" ] && [ "$BOARD" != "xiao" ]; then
-  echo "ABORT: $SHADOW/firmware/build is configured for board '$BOARD'; the OTA fleet is xiao." >&2
-  echo "Fix:   (cd $SHADOW/firmware && idf.py -DBRUSHLESSLAMP_BOARD=xiao reconfigure)" >&2
+if [ "$BOARD" != "custom" ]; then
+  echo "ABORT: $SHADOW/firmware/build is configured for board '${BOARD:-unset}'; the OTA fleet is custom." >&2
   exit 1
 fi
 
-# rm sdkconfig so the bumped DEVICE_SOFTWARE_VERSION_NUMBER default takes effect.
-( cd "$SHADOW/firmware" && rm -f sdkconfig && idf.py build )
-
 echo "==> write manifest"
-cat > "$SHADOW/firmware/build/manifest.json" <<EOF
-{ "version": $NUM, "version_str": "$VER", "url": "https://github.com/$REPO/releases/latest/download/brushlesslamp.bin" }
+# Custom-PCB asset names. Never publish a manifest.json / brushlesslamp.bin pair again:
+# legacy XIAO lamps (fw <= 1.2.3, no board check) poll those names and would install a
+# custom-pinned image; their 404 on manifest.json is what freezes them at 1.2.3.
+cat > "$SHADOW/firmware/build/manifest-custom.json" <<EOF
+{ "version": $NUM, "version_str": "$VER", "board": "custom", "url": "https://github.com/$REPO/releases/latest/download/brushlesslamp-custom.bin" }
 EOF
+cp "$SHADOW/firmware/build/brushlesslamp.bin" "$SHADOW/firmware/build/brushlesslamp-custom.bin"
 
 echo "==> publish GitHub release fw-$VER"
 gh release create "fw-$VER" \
-  "$SHADOW/firmware/build/brushlesslamp.bin" \
-  "$SHADOW/firmware/build/manifest.json" \
-  --repo "$REPO" --title "fw-$VER" --notes "BrushlessLamp firmware $VER (signed OTA)."
+  "$SHADOW/firmware/build/brushlesslamp-custom.bin" \
+  "$SHADOW/firmware/build/manifest-custom.json" \
+  --repo "$REPO" --title "fw-$VER" --notes "BrushlessLamp firmware $VER (signed OTA, custom PCB only; XIAO fleet frozen at 1.2.3)."
 
 echo "==> commit + push version bump"
 cd "$SRC"

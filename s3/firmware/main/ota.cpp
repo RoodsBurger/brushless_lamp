@@ -25,6 +25,17 @@
 
 static const char *TAG = "ota";
 
+// Compiled-in board name; the manifest must carry a matching "board" field or the
+// update is refused — a published binary for another board must never be staged
+// (its pin map would cripple every peripheral).
+#if defined(BRUSHLESSLAMP_BOARD_CUSTOM)
+static const char *BOARD_NAME = "custom";
+#elif defined(BRUSHLESSLAMP_BOARD_TEYLETEN)
+static const char *BOARD_NAME = "teyleten";
+#else
+static const char *BOARD_NAME = "xiao";
+#endif
+
 // Captured Location header from a redirect, and the accumulated manifest body.
 // All touched only from the single OTA task, so no locking needed.
 static char s_location[1024];
@@ -104,7 +115,15 @@ static bool fetch_manifest(uint32_t *out_version, char *out_url, size_t url_sz) 
     if (!root) { ESP_LOGW(TAG, "manifest parse failed"); return false; }
     cJSON *v = cJSON_GetObjectItem(root, "version");
     cJSON *u = cJSON_GetObjectItem(root, "url");
+    cJSON *b = cJSON_GetObjectItem(root, "board");
     bool ok = cJSON_IsNumber(v) && cJSON_IsString(u) && u->valuestring;
+    // Strict board match: a manifest without a board field, or for another board,
+    // is never ours (pre-board-field manifests were XIAO builds).
+    if (ok && !(cJSON_IsString(b) && b->valuestring && strcmp(b->valuestring, BOARD_NAME) == 0)) {
+        ESP_LOGW(TAG, "manifest board '%s' != '%s' — refusing update",
+                 (cJSON_IsString(b) && b->valuestring) ? b->valuestring : "(none)", BOARD_NAME);
+        ok = false;
+    }
     if (ok) {
         *out_version = (uint32_t)v->valueint;
         strncpy(out_url, u->valuestring, url_sz - 1);
@@ -143,23 +162,31 @@ static void ota_task(void *) {
     while (true) {
         uint32_t latest = 0;
         char url[256];
+        bool cycle_ok = false;
         if (fetch_manifest(&latest, url, sizeof(url))) {
+            cycle_ok = true;
             ESP_LOGI(TAG, "manifest version=%u, running=%u", latest, (unsigned)OTA_FW_VERSION);
-            if (latest > OTA_FW_VERSION && download_and_stage(url)) {
-                // Apply only when the core is physically down (LED off) AND the motor
-                // is parked + position saved — checking the real shaft angle, not Matter
-                // OnOff (which can read "off" while the core is still raised), so a reboot
-                // never lands mid-travel and corrupts the saved zero.
-                while (!motor_is_idle() || motor_get_shaft_angle() > OTA_REBOOT_MAX_ANGLE_RAD)
-                    vTaskDelay(pdMS_TO_TICKS(2000));
-                ESP_LOGW(TAG, "core down + motor parked — rebooting into updated firmware");
-                vTaskDelay(pdMS_TO_TICKS(500));
-                esp_restart();
+            if (latest > OTA_FW_VERSION) {
+                cycle_ok = download_and_stage(url);
+                if (cycle_ok) {
+                    // Apply only when the core is physically down (LED off) AND the motor
+                    // is parked + position saved — checking the real shaft angle, not Matter
+                    // OnOff (which can read "off" while the core is still raised), so a reboot
+                    // never lands mid-travel and corrupts the saved zero.
+                    while (!motor_is_idle() || motor_get_shaft_angle() > OTA_REBOOT_MAX_ANGLE_RAD)
+                        vTaskDelay(pdMS_TO_TICKS(2000));
+                    ESP_LOGW(TAG, "core down + motor parked — rebooting into updated firmware");
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    esp_restart();
+                }
             }
         }
+        // Healthy cycle: sleep the full interval. Failed fetch/download: retry in
+        // OTA_RETRY_DELAY_MS so a WiFi blip doesn't defer an update by days.
         // pdMS_TO_TICKS overflows its 32-bit intermediate for multi-day values on non-SMP
         // FreeRTOS (432e9 wraps to ~42 min); compute ticks in 64-bit — the result fits TickType_t.
-        vTaskDelay((TickType_t)((uint64_t)OTA_CHECK_INTERVAL_MS * configTICK_RATE_HZ / 1000));
+        uint32_t delay_ms = cycle_ok ? OTA_CHECK_INTERVAL_MS : OTA_RETRY_DELAY_MS;
+        vTaskDelay((TickType_t)((uint64_t)delay_ms * configTICK_RATE_HZ / 1000));
     }
 }
 
