@@ -125,15 +125,12 @@ static void save_homed_flag() {
     nvs_close(h);
 }
 
-// One-time NVS migration when the board's logical frame changes (the custom board
-// crosses ENC_A/B so positive angle = lamp up). Flipping the encoder sense inverts
-// the cached sensor_direction deterministically — no re-sweep at the off-stop — and
-// invalidates homed/pos, so first-boot homing re-runs toward the new frame's stop.
-#if defined(BRUSHLESSLAMP_BOARD_CUSTOM)
-static constexpr uint8_t FOC_FRAME_VERSION = 2;   // crossed ENC_A/B
-#else
-static constexpr uint8_t FOC_FRAME_VERSION = 1;   // original encoder frame
-#endif
+// One-time NVS migration when a board's logical frame changes (an encoder-sense
+// flip). A stored frame that mismatches inverts the cached sensor_direction
+// deterministically — no re-sweep at the off-stop — and invalidates homed/pos so
+// first-boot homing re-runs. Version 1 = the original (uncrossed) encoder frame;
+// lamps that briefly ran the fw-2.1.1 crossed frame (2) migrate back down here.
+static constexpr uint8_t FOC_FRAME_VERSION = 1;
 
 static void migrate_frame() {
     nvs_handle_t h;

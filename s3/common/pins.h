@@ -8,8 +8,8 @@
 //
 //   Signal           XIAO GPIO     Teyleten GPIO   Custom PCB GPIO
 //   ----------       ---------     -------------   ---------------
-//   PIN_ENC_A          1               1              18     (A/B crossed on custom: sets rotation sense = lamp-up)
-//   PIN_ENC_B          2               2              17
+//   PIN_ENC_A          1               1              17
+//   PIN_ENC_B          2               2              18
 //   PIN_ROT_A          3               3       (JTAG strap)  8
 //   PIN_ROT_B          4               4               9
 //   PIN_BTN            5               5              10
@@ -51,12 +51,8 @@ constexpr uint8_t PIN_PWM_A   = 12;    // DRV8313 IN2 — swapped with B to inve
 
 #elif defined(BRUSHLESSLAMP_BOARD_CUSTOM)   // all-in-one WROOM-1-N8R8 board (see PCB/) — UNVERIFIED until fabbed
 
-// ENC_A/B are crossed vs the J_SENSOR net order (A pad→GPIO17, B pad→GPIO18): the
-// encoder count sense defines the logical frame in closed-loop FOC, and this order
-// makes positive angle = lamp up on the custom-hardware build (motor.cpp migrates
-// cached calibration when this frame changes — see FOC_FRAME_VERSION).
-constexpr uint8_t PIN_ENC_A      = 18;   // MT6701 B pad (crossed — sets rotation sense)
-constexpr uint8_t PIN_ENC_B      = 17;   // MT6701 A pad (crossed — sets rotation sense)
+constexpr uint8_t PIN_ENC_A      = 17;   // MT6701 A (breakout via J_SENSOR)
+constexpr uint8_t PIN_ENC_B      = 18;   // MT6701 B
 constexpr uint8_t PIN_ENC_Z      = 14;   // MT6701 Z index — wired but unused by current firmware
 constexpr uint8_t PIN_ROT_A      = 8;    // knob quadrature A
 constexpr uint8_t PIN_ROT_B      = 9;    // knob quadrature B
