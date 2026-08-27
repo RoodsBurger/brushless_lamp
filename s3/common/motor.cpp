@@ -25,6 +25,7 @@ static constexpr const char *NVS_NS            = "foc_cal";
 static constexpr const char *NVS_KEY_DIRECTION = "dir";    // sensor_direction across boots; initFOC's sweep is unreliable at the off-stop
 static constexpr const char *NVS_KEY_HOMED     = "homed";  // install-time homing done flag
 static constexpr const char *NVS_KEY_POSITION  = "pos";    // last user_angle; restored as home_offset after the encoder resets on power-on
+static constexpr const char *NVS_KEY_FRAME     = "frame";  // logical-frame version; mismatch triggers the one-time calibration migration below
 static constexpr float       POS_SAVE_EPS_RAD  = 0.1f;     // skip save if move was <0.1 rad — spares flash
 
 // 200 µs busy-wait paces loopFOC at 5 kHz — quietest PID output on this motor; the
@@ -121,6 +122,36 @@ static void save_homed_flag() {
     uint8_t v = 1;
     nvs_set_u8(h, NVS_KEY_HOMED, v);
     nvs_commit(h);
+    nvs_close(h);
+}
+
+// One-time NVS migration when the board's logical frame changes (the custom board
+// crosses ENC_A/B so positive angle = lamp up). Flipping the encoder sense inverts
+// the cached sensor_direction deterministically — no re-sweep at the off-stop — and
+// invalidates homed/pos, so first-boot homing re-runs toward the new frame's stop.
+#if defined(BRUSHLESSLAMP_BOARD_CUSTOM)
+static constexpr uint8_t FOC_FRAME_VERSION = 2;   // crossed ENC_A/B
+#else
+static constexpr uint8_t FOC_FRAME_VERSION = 1;   // original encoder frame
+#endif
+
+static void migrate_frame() {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    uint8_t stored = 1;                            // key absent = pre-migration frame
+    nvs_get_u8(h, NVS_KEY_FRAME, &stored);
+    if (stored != FOC_FRAME_VERSION) {
+        int8_t dir = 0;
+        if (nvs_get_i8(h, NVS_KEY_DIRECTION, &dir) == ESP_OK && dir != 0) {
+            nvs_set_i8(h, NVS_KEY_DIRECTION, (int8_t)-dir);   // encoder-sense flip inverts it
+        }
+        nvs_erase_key(h, NVS_KEY_HOMED);           // the off-stop zero lives at the other end now
+        nvs_erase_key(h, NVS_KEY_POSITION);
+        nvs_set_u8(h, NVS_KEY_FRAME, FOC_FRAME_VERSION);
+        nvs_commit(h);
+        ESP_LOGW(TAG, "frame migration %u->%u: sensor_direction flipped, homing re-armed",
+                 stored, FOC_FRAME_VERSION);
+    }
     nvs_close(h);
 }
 
@@ -336,6 +367,8 @@ static void motor_foc_task(void *) {
         s_fault = true;
         vTaskDelete(nullptr);
     }
+
+    migrate_frame();
 
     // NVS-cached direction skips initFOC's direction sweep — only zero_electric_angle is computed, which is the only sweep that works with the rotor pinned at the off-stop.
     bool dir_cached = load_sensor_direction();
