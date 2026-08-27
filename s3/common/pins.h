@@ -62,9 +62,14 @@ constexpr uint8_t PIN_LED_CW     = 12;   // cool-white LEDC
 constexpr int     PIN_DRV_EN     = 15;   // DRV8313 EN (software-controlled; 0Ω-to-3V3 jumper option on board)
 constexpr int     PIN_DRV_NFAULT = 16;   // DRV8313 nFAULT (active-low, external pull-up) — status-LED fault input
 constexpr uint8_t PIN_NSP        = 7;    // DRV8313 nSLEEP
+// Phase order (not encoder wiring) anchors the user-visible rotation frame:
+// SimpleFOC's sensor_direction auto-normalizes any encoder sense, so only the
+// PWM A/B order flips which physical direction is "+" (= lamp up). Natural
+// IN1/IN2 order here — the XIAO-era A/B swap is undone because this build's
+// mechanics are mirrored (motor.cpp FOC_FRAME_VERSION migrates calibration).
 constexpr uint8_t PIN_PWM_C      = 6;    // DRV8313 IN3
-constexpr uint8_t PIN_PWM_B      = 4;    // DRV8313 IN1 — swapped with A to invert rotor direction
-constexpr uint8_t PIN_PWM_A      = 5;    // DRV8313 IN2 — swapped with B to invert rotor direction
+constexpr uint8_t PIN_PWM_B      = 5;    // DRV8313 IN2
+constexpr uint8_t PIN_PWM_A      = 4;    // DRV8313 IN1
 constexpr uint8_t PIN_STATUS_LED = 21;   // board status LED (active-HIGH) — driven by main/status_led.cpp
 
 #else  // default: Seeed XIAO ESP32-S3

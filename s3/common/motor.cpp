@@ -125,13 +125,13 @@ static void save_homed_flag() {
     nvs_close(h);
 }
 
-// One-time NVS migration when the lamp's logical frame changes (an encoder-sense
-// flip). A stored frame that mismatches inverts the cached sensor_direction
-// deterministically — no re-sweep at the off-stop — and invalidates homed/pos so
-// first-boot homing re-runs. Version 2 = the ENC A/B wires are physically swapped
-// at J_SENSOR (positions 3↔4) on the installed lamp, reversing the motion frame
-// so positive angle = lamp up; the firmware pin map is unchanged.
-static constexpr uint8_t FOC_FRAME_VERSION = 2;
+// One-time NVS migration when the lamp's logical frame changes. A stored frame
+// that mismatches inverts the cached sensor_direction deterministically — no
+// re-sweep at the off-stop — and invalidates homed/pos so first-boot homing
+// re-runs. Version 3 = natural PWM IN1/IN2 phase order on the custom board
+// (phase order anchors the visible frame; encoder-sense changes are
+// auto-normalized by sensor_direction and never shift it).
+static constexpr uint8_t FOC_FRAME_VERSION = 3;
 
 static void migrate_frame() {
     nvs_handle_t h;
