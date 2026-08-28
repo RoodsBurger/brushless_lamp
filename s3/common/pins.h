@@ -57,8 +57,10 @@ constexpr uint8_t PIN_ENC_Z      = 14;   // MT6701 Z index — wired but unused 
 constexpr uint8_t PIN_ROT_A      = 8;    // knob quadrature A
 constexpr uint8_t PIN_ROT_B      = 9;    // knob quadrature B
 constexpr uint8_t PIN_BTN        = 10;   // knob push-button (active-low, INPUT_PULLUP)
-constexpr uint8_t PIN_LED_WW     = 11;   // warm-white LEDC
-constexpr uint8_t PIN_LED_CW     = 12;   // cool-white LEDC
+// WW/CW crossed vs the schematic net names (LEDW_D=11, LEDC_D=12): the installed
+// lamp's strips are wired to the opposite gates, so the pins swap to match.
+constexpr uint8_t PIN_LED_WW     = 12;   // warm-white LEDC
+constexpr uint8_t PIN_LED_CW     = 11;   // cool-white LEDC
 constexpr int     PIN_DRV_EN     = 15;   // DRV8313 EN (software-controlled; 0Ω-to-3V3 jumper option on board)
 constexpr int     PIN_DRV_NFAULT = 16;   // DRV8313 nFAULT (active-low, external pull-up) — status-LED fault input
 constexpr uint8_t PIN_NSP        = 7;    // DRV8313 nSLEEP

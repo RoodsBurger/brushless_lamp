@@ -242,8 +242,23 @@ option: `xiao` (default), `teyleten`, or `custom` (the all-in-one WROOM-1 PCB in
 idf.py -DBRUSHLESSLAMP_BOARD=custom reconfigure
 ```
 
-Only `common` + `main` recompile on a switch. `release.sh` refuses to publish a
-non-`xiao` build — the OTA fleet is XIAO hardware and the pin maps differ.
+Only `common` + `main` recompile on a switch. `release.sh` builds and publishes
+**custom-board** OTA assets only (`manifest-custom.json` + `brushlesslamp-custom.bin`);
+legacy XIAO lamps poll `manifest.json`, which no release ships anymore, so they stay
+frozen at 1.2.3 with full lamp function.
+
+### As-built notes — custom lamp #1
+
+- **Motion frame**: the build's mechanics are mirrored vs the XIAO rig, so the custom
+  branch uses the natural DRV8313 IN1/IN2 PWM order (the XIAO-era A/B swap is undone).
+  Phase order anchors the visible rotation frame; encoder-sense changes are
+  auto-normalized by SimpleFOC's `sensor_direction` and can never flip it. Frame
+  changes bump `FOC_FRAME_VERSION` (motor.cpp), which migrates cached calibration and
+  re-arms homing over OTA.
+- **Encoder wires**: physically crossed at `J_SENSOR` positions 3↔4 (A↔B) on this
+  lamp — harmless (auto-normalized), but remember if the module is ever rewired.
+- **LED strips**: warm/cool wired to opposite gates than the schematic net names, so
+  `PIN_LED_WW`/`PIN_LED_CW` are swapped in `pins.h` (12/11).
 
 ### Status LED (custom PCB only)
 
