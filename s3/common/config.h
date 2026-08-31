@@ -39,7 +39,7 @@ constexpr int   MOTION_DOWNSAMPLE = 5;              // move() runs every N loopF
 // here feeds a physics-bounded brake curve into move():
 //     desired = min(MOTION_VELOCITY, sqrt(2 * MOTION_ACCEL * |pos_err|))
 // Accel / cruise / decel profile lands exactly at target with v=0.
-constexpr float    ANGLE_MAX          = 73.15f * 6.2831853f;  // 73.15 motor rotations — full travel stops just short of the mechanical top; shared by knob nudge and Matter level scale.
+constexpr float    ANGLE_MAX          = 73.0f * 6.2831853f;  // 73 motor rotations — full travel stops short of the mechanical top; shared by knob nudge and Matter level scale.
 constexpr float    MOTION_VELOCITY    = 15.0f;     // default cruise cap (rad/s); runtime override via motor_set_motion_velocity
 constexpr float    MOTION_ACCEL       = 10.0f;      // rad/s² ramp + brake rate
 constexpr float    MOTION_EPS         = 0.5f;       // brake-on-reverse sign-change eps (rad/s)
@@ -114,7 +114,7 @@ constexpr unsigned  MOTOR_TASK_PRIORITY  = 20;      // above lwIP (18), below ID
 // Self-hosted signed OTA. The task polls OTA_MANIFEST_URL and updates only when
 // the manifest's integer version exceeds OTA_FW_VERSION. Bump OTA_FW_VERSION with
 // PROJECT_VER(_NUMBER) in CMakeLists on every release (release.sh does both).
-constexpr uint32_t  OTA_FW_VERSION        = 20105;                 // = PROJECT_VER 2.1.5
+constexpr uint32_t  OTA_FW_VERSION        = 20106;                 // = PROJECT_VER 2.1.6
 constexpr uint32_t  OTA_INITIAL_DELAY_MS  = 60000;                   // first check ~1 min after each boot (so a reboot = an update check)
 constexpr uint32_t  OTA_CHECK_INTERVAL_MS = 5u * 24 * 60 * 60 * 1000; // then re-check every 5 days while running
 constexpr uint32_t  OTA_RETRY_DELAY_MS    = 60u * 60 * 1000;         // failed fetch/download retries hourly instead of waiting out the full interval
