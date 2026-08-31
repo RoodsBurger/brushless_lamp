@@ -588,14 +588,17 @@ void motor_set_target_angle(float rad) {
     portENTER_CRITICAL(&s_target_mux);
     s_target_angle = v;
     portEXIT_CRITICAL(&s_target_mux);
-    if (v > 0.0f) s_fade_reference = v;
+    // Raising: the target is the endpoint. Lowering to 0: take the live position, not
+    // the last commanded target — a controller that jumps straight to 0 (Matter off)
+    // may carry a stale or low level, and the fade must span the real descent.
+    s_fade_reference = (v > 0.0f) ? v : s_shaft_angle_cached;
 }
 void motor_nudge_target_angle(float d_rad) {
     portENTER_CRITICAL(&s_target_mux);
     s_target_angle = clamp_angle(s_target_angle + d_rad);
     float v = s_target_angle;
     portEXIT_CRITICAL(&s_target_mux);
-    if (v > 0.0f) s_fade_reference = v;
+    s_fade_reference = (v > 0.0f) ? v : s_shaft_angle_cached;
 }
 void motor_request_matter_sync_on_settle() { s_sync_allow_on = true; s_sync_pending = true; }
 void motor_set_settle_callback(void (*cb)(float, bool)) { s_settle_cb = cb; }

@@ -78,7 +78,7 @@ constexpr float    LED_FADE_ANGLE_MIN_RAD = 0.5f;
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT = 200;      // 0..255 pre-gamma
 constexpr uint8_t  LED_MAX_DUTY_MIN     = 16;       // floor on knob + NVS load — below this gamma squashes to ~0 and the lamp reads as broken
 constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness mode
-constexpr uint16_t LED_FADE_STEP        = 4;        // 10-bit duty units per fader tick (full 0..1023 sweep ≈ 2.56 s)
+constexpr uint16_t LED_FADE_STEP        = 12;       // 10-bit duty units per fader tick (full 0..1023 sweep ≈ 0.85 s). Fast enough that the shaft's travel through the fade window, not this slew, sets the visible fade rate — at 4 the light lingered after a short descent had already closed.
 constexpr uint32_t LED_FADE_PERIOD_MS   = 10;
 constexpr float    LED_GAMMA            = 2.2f;     // perceptual curve so equal knob steps feel visually equal
 // Color temperature. The LED blend is calibrated to the real LEDs — CW ≈ 6500 K
