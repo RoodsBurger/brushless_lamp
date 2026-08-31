@@ -66,13 +66,16 @@ static uint16_t gamma_correct(uint8_t perceptual) {
 // way down). Gamma is applied to the post-ramp value so brightness truly reaches 0
 // when the motor rests at angle 0.
 static uint16_t peak_for_angle(float angle, uint8_t max_duty) {
-    if (angle <= 0.0f) return 0;
+    if (angle <= LED_OFF_ANGLE_RAD) return 0;   // seated — fully dark
     float window = LED_FADE_FRACTION * motor_get_fade_reference();
     if (window < LED_FADE_ANGLE_MIN_RAD) window = LED_FADE_ANGLE_MIN_RAD;
     float frac = angle / window;
     if (frac > 1.0f) frac = 1.0f;
     uint8_t perceptual = (uint8_t)(frac * (float)max_duty + 0.5f);
-    return gamma_correct(perceptual);
+    uint16_t duty = gamma_correct(perceptual);
+    // Still travelling: keep a faint glow rather than letting gamma round to black
+    // early, so the light goes out as the lamp seats instead of partway down.
+    return (duty < LED_MIN_ON_DUTY) ? LED_MIN_ON_DUTY : duty;
 }
 
 static void ct_to_targets(uint16_t ct, uint16_t peak, uint16_t *ww, uint16_t *cw) {

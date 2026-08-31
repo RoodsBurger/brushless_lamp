@@ -75,6 +75,12 @@ constexpr uint16_t LED_HW_DUTY_MAX     = 1023;
 // fixed sliver at the very bottom. The MIN floor keeps tiny moves from snapping on.
 constexpr float    LED_FADE_FRACTION      = 0.25f;
 constexpr float    LED_FADE_ANGLE_MIN_RAD = 0.5f;
+// The gamma curve plus 10-bit quantisation reach duty 0 while the shaft still has
+// visible travel left, so a close finished in the dark. Hold a faint floor while
+// travelling and only cut to true black once the lamp is seated. The seat threshold
+// sits above POS_AT_REST_EPS so a parked lamp is always fully dark, never left glowing.
+constexpr uint16_t LED_MIN_ON_DUTY       = 8;      // 10-bit duty floor while still travelling
+constexpr float    LED_OFF_ANGLE_RAD     = 0.6f;   // at/below this the lamp is seated → hard 0
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT = 200;      // 0..255 pre-gamma
 constexpr uint8_t  LED_MAX_DUTY_MIN     = 16;       // floor on knob + NVS load — below this gamma squashes to ~0 and the lamp reads as broken
 constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness mode
@@ -119,7 +125,7 @@ constexpr unsigned  MOTOR_TASK_PRIORITY  = 20;      // above lwIP (18), below ID
 // Self-hosted signed OTA. The task polls OTA_MANIFEST_URL and updates only when
 // the manifest's integer version exceeds OTA_FW_VERSION. Bump OTA_FW_VERSION with
 // PROJECT_VER(_NUMBER) in CMakeLists on every release (release.sh does both).
-constexpr uint32_t  OTA_FW_VERSION        = 20200;                 // = PROJECT_VER 2.2.0
+constexpr uint32_t  OTA_FW_VERSION        = 20201;                 // = PROJECT_VER 2.2.1
 constexpr uint32_t  OTA_INITIAL_DELAY_MS  = 60000;                   // first check ~1 min after each boot (so a reboot = an update check)
 constexpr uint32_t  OTA_CHECK_INTERVAL_MS = 5u * 24 * 60 * 60 * 1000; // then re-check every 5 days while running
 constexpr uint32_t  OTA_RETRY_DELAY_MS    = 60u * 60 * 1000;         // failed fetch/download retries hourly instead of waiting out the full interval
