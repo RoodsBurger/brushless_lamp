@@ -70,10 +70,10 @@ constexpr uint16_t LED_HW_DUTY_MAX     = 1023;
 
 // LED brightness ramps 0 → max linearly across the bottom of the move, then holds at
 // max. The ramp spans LED_FADE_FRACTION of the move's nonzero endpoint (see
-// motor_get_fade_reference), so a rise fades in over the first 25 % of its target and
-// a descent fades out over the last 25 % — proportional to the move rather than a
+// motor_get_fade_reference), so a rise fades in over the first 20 % of its target and
+// a descent fades out over the last 20 % — proportional to the move rather than a
 // fixed sliver at the very bottom. The MIN floor keeps tiny moves from snapping on.
-constexpr float    LED_FADE_FRACTION      = 0.25f;
+constexpr float    LED_FADE_FRACTION      = 0.20f;
 constexpr float    LED_FADE_ANGLE_MIN_RAD = 0.5f;
 // The gamma curve plus 10-bit quantisation reach duty 0 while the shaft still has
 // visible travel left, so a close finished in the dark. Hold a faint floor while
