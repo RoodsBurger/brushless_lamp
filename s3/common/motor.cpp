@@ -38,6 +38,10 @@ static Encoder         s_encoder(PIN_ENC_A, PIN_ENC_B, ENCODER_PPR);
 
 static volatile float  s_target_angle          = 0.0f;
 static volatile float  s_shaft_angle_cached    = 0.0f;
+// Nonzero endpoint of the current move — the target while raising/holding, or the
+// height left behind while lowering to 0. The LED fade spans a fraction of it, so
+// the fade scales with the move instead of being a fixed sliver at the bottom.
+static volatile float  s_fade_reference        = ANGLE_MAX;
 static volatile bool   s_sync_pending          = false;
 static volatile bool   s_sync_allow_on         = false;   // may the pending settle turn the lamp ON? (knob raise only)
 static volatile bool   s_home_request          = false;   // set by motor_request_homing(), serviced on the FOC task
@@ -409,6 +413,7 @@ static void motor_foc_task(void *) {
         // Clamp: a firmware update may have shrunk ANGLE_MAX below the saved position;
         // the clamped target walks the lamp down to the new max on first wake.
         s_target_angle = clamp_angle(saved_pos);
+        if (s_target_angle > 0.0f) s_fade_reference = s_target_angle;   // fade spans the restored height, not the default
         s_sync_allow_on = false;            // a restore reflects position but must not turn the lamp on
         s_sync_pending  = true;             // push current state to Matter on first idle-disable
         ESP_LOGI(TAG, "restored position: user_angle=%.3f (home_offset=%.3f)", saved_pos, s_home_offset);
@@ -583,11 +588,14 @@ void motor_set_target_angle(float rad) {
     portENTER_CRITICAL(&s_target_mux);
     s_target_angle = v;
     portEXIT_CRITICAL(&s_target_mux);
+    if (v > 0.0f) s_fade_reference = v;
 }
 void motor_nudge_target_angle(float d_rad) {
     portENTER_CRITICAL(&s_target_mux);
     s_target_angle = clamp_angle(s_target_angle + d_rad);
+    float v = s_target_angle;
     portEXIT_CRITICAL(&s_target_mux);
+    if (v > 0.0f) s_fade_reference = v;
 }
 void motor_request_matter_sync_on_settle() { s_sync_allow_on = true; s_sync_pending = true; }
 void motor_set_settle_callback(void (*cb)(float, bool)) { s_settle_cb = cb; }
@@ -595,6 +603,7 @@ void motor_request_homing() { s_home_request = true; }
 float motor_get_shaft_angle()    { return s_shaft_angle_cached; }
 bool  motor_is_idle()            { return s_idle; }
 bool  motor_get_fault()          { return s_fault; }
+float motor_get_fade_reference() { return s_fade_reference; }
 
 void motor_set_motion_velocity(float rad_per_sec) {
     if (rad_per_sec <= 0.0f) { s_motion_velocity = MOTION_VELOCITY; return; }

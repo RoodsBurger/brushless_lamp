@@ -60,12 +60,16 @@ static uint16_t gamma_correct(uint8_t perceptual) {
     return (uint16_t)(powf(f, LED_GAMMA) * (float)LED_HW_DUTY_MAX + 0.5f);
 }
 
-// Continuous angle → peak-duty mapping. Below 0: off. 0..LED_FADE_ANGLE_RAD:
-// linear ramp. Above: clamp at max_duty. Gamma is applied to the post-ramp value
-// so brightness truly goes to 0 when the motor is at rest at angle 0.
+// Continuous angle → peak-duty mapping. Below 0: off. Linear ramp across the bottom
+// LED_FADE_FRACTION of the move's nonzero endpoint, then clamped at max_duty, so the
+// fade scales with the move (10 % of the target on the way up, the last 10 % on the
+// way down). Gamma is applied to the post-ramp value so brightness truly reaches 0
+// when the motor rests at angle 0.
 static uint16_t peak_for_angle(float angle, uint8_t max_duty) {
     if (angle <= 0.0f) return 0;
-    float frac = angle / LED_FADE_ANGLE_RAD;
+    float window = LED_FADE_FRACTION * motor_get_fade_reference();
+    if (window < LED_FADE_ANGLE_MIN_RAD) window = LED_FADE_ANGLE_MIN_RAD;
+    float frac = angle / window;
     if (frac > 1.0f) frac = 1.0f;
     uint8_t perceptual = (uint8_t)(frac * (float)max_duty + 0.5f);
     return gamma_correct(perceptual);

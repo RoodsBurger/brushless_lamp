@@ -68,8 +68,13 @@ constexpr uint32_t LED_PWM_FREQ_HZ     = 25000;
 constexpr uint8_t  LED_PWM_RESOLUTION  = 10;
 constexpr uint16_t LED_HW_DUTY_MAX     = 1023;
 
-// LED brightness ramps 0 → max linearly across the first LED_FADE_ANGLE_RAD of shaft travel; fader smooths discontinuous target changes.
-constexpr float    LED_FADE_ANGLE_RAD   = 3.0f;
+// LED brightness ramps 0 → max linearly across the bottom of the move, then holds at
+// max. The ramp spans LED_FADE_FRACTION of the move's nonzero endpoint (see
+// motor_get_fade_reference), so a rise fades in over the first 10 % of its target and
+// a descent fades out over the last 10 % — proportional to the move rather than a
+// fixed sliver at the very bottom. The MIN floor keeps tiny moves from snapping on.
+constexpr float    LED_FADE_FRACTION      = 0.10f;
+constexpr float    LED_FADE_ANGLE_MIN_RAD = 0.5f;
 constexpr uint8_t  LED_MAX_DUTY_DEFAULT = 200;      // 0..255 pre-gamma
 constexpr uint8_t  LED_MAX_DUTY_MIN     = 16;       // floor on knob + NVS load — below this gamma squashes to ~0 and the lamp reads as broken
 constexpr uint8_t  LED_MAX_DUTY_STEP    = 8;        // knob nudge in brightness mode
