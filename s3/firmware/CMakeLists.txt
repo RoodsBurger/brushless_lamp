@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
-set(PROJECT_VER "2.1.7")
-set(PROJECT_VER_NUMBER 20107)
+set(PROJECT_VER "2.1.8")
+set(PROJECT_VER_NUMBER 20108)
 
 ## Board variant — selects the pin-map branch in common/pins.h. Persisted in this
 ## build dir's CMake cache; switch with: idf.py -DBRUSHLESSLAMP_BOARD=<board> reconfigure
