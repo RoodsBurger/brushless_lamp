@@ -81,11 +81,6 @@ static esp_err_t attribute_update_cb(callback_type_t type, uint16_t endpoint_id,
                attribute_id == LevelControl::Attributes::CurrentLevel::Id) {
         if (val->val.u8 == s_level) return ESP_OK;
         s_level = val->val.u8;
-        // The OnOff effect writes CurrentLevel=1 (MinLevel) transiently: before OnOff=false
-        // on the way off, and before restoring the stored level on the way on. The writes
-        // that follow carry the real target; driving toward 0.4 % here would re-anchor the
-        // LED fade mid-sequence. Controllers never send level 1 otherwise (1 % is level 3).
-        if (s_level == 1 && s_on_off) return ESP_OK;
         apply_state();
     } else if (cluster_id == ColorControl::Id &&
                attribute_id == ColorControl::Attributes::ColorTemperatureMireds::Id) {
