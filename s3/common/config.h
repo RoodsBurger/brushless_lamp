@@ -12,17 +12,19 @@ constexpr int      ENCODER_PPR       = 1024;        // MT6701 ABZ pulses/rev; Si
 constexpr float    SUPPLY_VOLTAGE    = 24.0f;
 constexpr float    PHASE_RESISTANCE  = 5.0f;
 constexpr float    KV_RATING         = 100.0f;
-// INERT in voltage torque mode (SimpleFOC 2.4.0 ignores it there). Stall
-// protection is the runtime stall handler + nSLEEP fault-clear in motor.cpp.
-// estimated_current mode would enforce this, but its unfiltered back-EMF
-// feed-forward makes the motor audibly louder, so voltage mode is used instead.
-constexpr float    CURRENT_LIMIT     = 0.5f;
+// Phase-current cap. SimpleFOC's voltage torque mode ignores current_limit, so
+// motor.cpp enforces it per tick as a speed-aware Uq cap (I·R + back-EMF(ω)). This
+// bounds stall / binding current — and the 24 V rail sag the resistor-limited LED
+// strip renders as a brightness dip — without estimated_current mode's noisy
+// back-EMF feed-forward. Cruise draws ~1.5 A; stall handler + nSLEEP fault-clear
+// still cover a full stop.
+constexpr float    CURRENT_LIMIT     = 2.0f;
 constexpr float    VELOCITY_LIMIT    = 50.0f;       // SimpleFOC's internal velocity cap
 // 6 V sensor-align drives enough current (~1.2 A / 5 Ω) for a clean direction
 // sweep on first boot; sensor_direction is then cached in NVS.
 constexpr float    VOLTAGE_SENSOR_ALIGN = 6.0f;
-// Caps Uq in voltage-torque mode. At 40 rad/s the PID needs ~10 V (back-EMF +
-// IR + headroom); 18 V keeps the output off the rail without losing torque,
+// Hard Uq ceiling. The per-tick current cap in motor.cpp normally sits below it
+// (~10 V at standstill, ~12.4 V at 43 rad/s); 18 V keeps the output off the rail
 // and stays above the DRV8313's 200 ns min-on-time at idle duty.
 constexpr float    VOLTAGE_LIMIT     = 18.0f;
 
@@ -60,11 +62,12 @@ constexpr float    STALL_VEL_EPS    = 0.5f;   // shaft slowing past this is "fro
 constexpr uint32_t STALL_WARMUP_MS  = 400;   // grace after engage so the trapezoidal ramp doesn't false-trip
 constexpr uint32_t STALL_TIMEOUT_MS = 150;   // sustained-frozen window before stall fires
 
-// LED driver (LEDC). 25 kHz keeps PWM well above the audible band; 10-bit duty
-// gives the gamma curve 4× finer low-end steps than 8-bit. 10 bits is the max at
-// 25 kHz: arduino-esp32 clocks LEDC from the 40 MHz XTAL (40 MHz / 25 kHz = 1600
-// counts < 2^11). Perceptual values stay 0..255; hardware duty is 0..1023.
-constexpr uint32_t LED_PWM_FREQ_HZ     = 25000;
+// LED driver (LEDC). 30 kHz: inaudible, and off the motor's 25 kHz so the strip's
+// current pulses can't phase-lock with the phase-current pulses on the shared 24 V
+// rail. 10-bit duty gives the gamma curve 4× finer low-end steps than 8-bit and is
+// the max here: arduino-esp32 clocks LEDC from the 40 MHz XTAL (40 MHz / 30 kHz =
+// 1333 counts < 2^11). Perceptual values stay 0..255; hardware duty is 0..1023.
+constexpr uint32_t LED_PWM_FREQ_HZ     = 30000;
 constexpr uint8_t  LED_PWM_RESOLUTION  = 10;
 constexpr uint16_t LED_HW_DUTY_MAX     = 1023;
 

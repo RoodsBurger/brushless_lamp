@@ -350,7 +350,7 @@ static void motor_foc_task(void *) {
     // gimbals). estimated_current would enforce CURRENT_LIMIT but its raw
     // back-EMF feed-forward injects 1 kHz velocity-jitter into Uq and cancels
     // the motor's EM damping, making it audibly louder.
-    // Stall current is bounded instead by the runtime stall handler below.
+    // CURRENT_LIMIT is enforced instead by the per-tick Uq cap in the loop below.
     s_motor.torque_controller    = TorqueControlType::voltage;
     s_motor.foc_modulation       = FOCModulationType::SpaceVectorPWM;
     s_motor.motion_downsample    = MOTION_DOWNSAMPLE;
@@ -568,6 +568,12 @@ static void motor_foc_task(void *) {
             }
             s_idle = true;                   // parked + position saved — safe to reboot for OTA
         }
+
+        // Speed-aware Uq cap = CURRENT_LIMIT in voltage mode: I·R plus the back-EMF at
+        // the present speed, so the phase current stays capped from standstill to cruise.
+        // A cap, not a feed-forward — velocity noise only matters while saturated.
+        float uq_cap = CURRENT_LIMIT * PHASE_RESISTANCE + fabsf(s_motor.estimateBEMF(s_motor.shaft_velocity));
+        s_motor.updateVoltageLimit(fminf(uq_cap, VOLTAGE_LIMIT));
 
         // While disabled these only refresh sensor state — keeps user_angle live so
         // back-driven motion is visible to the wake check and the LED fade.
