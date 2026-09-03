@@ -13,19 +13,20 @@ constexpr float    SUPPLY_VOLTAGE    = 24.0f;
 constexpr float    PHASE_RESISTANCE  = 5.0f;
 constexpr float    KV_RATING         = 100.0f;
 // Phase-current cap. SimpleFOC's voltage torque mode ignores current_limit, so
-// motor.cpp enforces it per tick as a speed-aware Uq cap (I·R + back-EMF(ω)). This
-// bounds stall / binding current — and the 24 V rail sag the resistor-limited LED
-// strip renders as a brightness dip — without estimated_current mode's noisy
-// back-EMF feed-forward. 0.7 A sits just above the lift's need so a stall or bind
-// draws little; stall handler + nSLEEP fault-clear cover a full stop.
-constexpr float    CURRENT_LIMIT     = 0.7f;
+// motor.cpp enforces it per tick as a speed-aware Uq cap (I·R + back-EMF(ω)),
+// without estimated_current mode's noisy back-EMF feed-forward. 3.6 A equals
+// VOLTAGE_LIMIT / PHASE_RESISTANCE, so the cap sits at the 18 V ceiling everywhere:
+// full lift torque, stall current bounded by the stall handler + nSLEEP fault-clear.
+// Lower values cut stall / binding current but let the velocity loop saturate on
+// friction spots.
+constexpr float    CURRENT_LIMIT     = 3.6f;
 constexpr float    VELOCITY_LIMIT    = 50.0f;       // SimpleFOC's internal velocity cap
 // 6 V sensor-align drives enough current (~1.2 A / 5 Ω) for a clean direction
 // sweep on first boot; sensor_direction is then cached in NVS.
 constexpr float    VOLTAGE_SENSOR_ALIGN = 6.0f;
-// Hard Uq ceiling. The per-tick current cap in motor.cpp normally sits below it
-// (~3.5 V at standstill, ~5.9 V at 43 rad/s); 18 V keeps the output off the rail
-// and stays above the DRV8313's 200 ns min-on-time at idle duty.
+// Hard Uq ceiling; the per-tick current cap in motor.cpp meets it at CURRENT_LIMIT
+// 3.6 A. 18 V keeps the output off the rail and stays above the DRV8313's 200 ns
+// min-on-time at idle duty.
 constexpr float    VOLTAGE_LIMIT     = 18.0f;
 
 // Inner velocity PID. Output is Uq volts (voltage torque mode — the silent
