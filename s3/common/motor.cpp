@@ -41,6 +41,7 @@ static volatile float  s_shaft_angle_cached    = 0.0f;
 // Nonzero endpoint of the current move — the target while raising/holding, or the
 // height left behind while lowering to 0. The LED fade spans a fraction of it, so
 // the fade scales with the move instead of being a fixed sliver at the bottom.
+// Anchored by anchor_fade_reference(), which freezes it while the light is mid-fade.
 static volatile float  s_fade_reference        = ANGLE_MAX;
 static volatile bool   s_sync_pending          = false;
 static volatile bool   s_sync_allow_on         = false;   // may the pending settle turn the lamp ON? (knob raise only)
@@ -589,22 +590,40 @@ void motor_init_and_start() {
                             MOTOR_TASK_PRIORITY, nullptr, CORE_MOTOR);
 }
 
+// LED fade window for a reference: LED_FADE_FRACTION of it, floored like peak_for_angle.
+static float fade_window(float reference) {
+    float w = LED_FADE_FRACTION * reference;
+    return (w < LED_FADE_ANGLE_MIN_RAD) ? LED_FADE_ANGLE_MIN_RAD : w;
+}
+
+// Anchors the fade reference for a new target — the endpoint when raising or lowering
+// to a height, the live position when lowering to 0 — but only while that leaves the
+// present brightness untouched: the lamp is dark, or the shaft sits above both the old
+// and the new window (full brightness). Mid-fade the reference stays frozen, so a knob
+// detent past zero, a Matter Off during a rise or On during a descent, and a slider
+// raise from a low level all move the target without stepping the light.
+static void anchor_fade_reference(float new_target) {
+    float shaft     = s_shaft_angle_cached;
+    float candidate = (new_target > 0.0f) ? new_target : shaft;
+    bool  dark      = shaft <= LED_OFF_ANGLE_RAD;
+    bool  full_now  = shaft >= fade_window(s_fade_reference);
+    bool  full_next = shaft >= fade_window(candidate);
+    if (dark || (full_now && full_next)) s_fade_reference = candidate;
+}
+
 void motor_set_target_angle(float rad) {
     float v = clamp_angle(rad);
     portENTER_CRITICAL(&s_target_mux);
     s_target_angle = v;
     portEXIT_CRITICAL(&s_target_mux);
-    // Raising: the target is the endpoint. Lowering to 0: take the live position, not
-    // the last commanded target — a controller that jumps straight to 0 (Matter off)
-    // may carry a stale or low level, and the fade must span the real descent.
-    s_fade_reference = (v > 0.0f) ? v : s_shaft_angle_cached;
+    anchor_fade_reference(v);
 }
 void motor_nudge_target_angle(float d_rad) {
     portENTER_CRITICAL(&s_target_mux);
     s_target_angle = clamp_angle(s_target_angle + d_rad);
     float v = s_target_angle;
     portEXIT_CRITICAL(&s_target_mux);
-    s_fade_reference = (v > 0.0f) ? v : s_shaft_angle_cached;
+    anchor_fade_reference(v);
 }
 void motor_request_matter_sync_on_settle() { s_sync_allow_on = true; s_sync_pending = true; }
 void motor_set_settle_callback(void (*cb)(float, bool)) { s_settle_cb = cb; }

@@ -34,7 +34,9 @@ constexpr float    VOLTAGE_LIMIT     = 18.0f;
 constexpr float PID_P             = 0.2f;
 constexpr float PID_I             = 20.0f;
 constexpr float PID_D             = 0.0f;
-constexpr float PID_OUTPUT_RAMP   = 150.0f;         // V/s cap on Uq slew
+// Uq slew cap. 25 V/s brings cruise Uq (~10 V) up over ~0.4 s, so the motor's current —
+// and the 24 V rail sag the LED strip renders — slides in at a move start instead of stepping.
+constexpr float PID_OUTPUT_RAMP   = 25.0f;
 constexpr float LPF_TF            = 0.02f;          // velocity LPF time constant (s)
 constexpr int   MOTION_DOWNSAMPLE = 5;              // move() runs every N loopFOC ticks
 
