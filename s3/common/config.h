@@ -62,12 +62,14 @@ constexpr float    STALL_VEL_EPS    = 0.5f;   // shaft slowing past this is "fro
 constexpr uint32_t STALL_WARMUP_MS  = 400;   // grace after engage so the trapezoidal ramp doesn't false-trip
 constexpr uint32_t STALL_TIMEOUT_MS = 150;   // sustained-frozen window before stall fires
 
-// LED driver (LEDC). 30 kHz: inaudible, and off the motor's 25 kHz so the strip's
-// current pulses can't phase-lock with the phase-current pulses on the shared 24 V
-// rail. 10-bit duty gives the gamma curve 4× finer low-end steps than 8-bit and is
-// the max here: arduino-esp32 clocks LEDC from the 40 MHz XTAL (40 MHz / 30 kHz =
-// 1333 counts < 2^11). Perceptual values stay 0..255; hardware duty is 0..1023.
-constexpr uint32_t LED_PWM_FREQ_HZ     = 30000;
+// LED driver (LEDC). 22.5 kHz sits midway between the motor's rail-current spectral
+// lines: 25 kHz PWM carrier ± multiples of the 5 kHz FOC update rate puts a line every
+// 5 kHz (20, 25, 30 kHz...), and an LED PWM on or near a line beats with it at a slow,
+// visible rate through the shared 24 V rail. Midway, the nearest beat is 2.5 kHz.
+// Still inaudible. 10-bit duty gives the gamma curve 4× finer low-end steps than 8-bit
+// and is the max here: arduino-esp32 clocks LEDC from the 40 MHz XTAL (40 MHz /
+// 22.5 kHz = 1778 counts < 2^11). Perceptual values stay 0..255; hardware duty 0..1023.
+constexpr uint32_t LED_PWM_FREQ_HZ     = 22500;
 constexpr uint8_t  LED_PWM_RESOLUTION  = 10;
 constexpr uint16_t LED_HW_DUTY_MAX     = 1023;
 
