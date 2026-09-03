@@ -40,13 +40,13 @@ constexpr int   MOTION_DOWNSAMPLE = 5;              // move() runs every N loopF
 //     desired = min(MOTION_VELOCITY, sqrt(2 * MOTION_ACCEL * |pos_err|))
 // Accel / cruise / decel profile lands exactly at target with v=0.
 constexpr float    ANGLE_MAX          = 73.0f * 6.2831853f;  // 73 motor rotations — full travel stops short of the mechanical top; shared by knob nudge and Matter level scale.
-constexpr float    MOTION_VELOCITY    = 22.0f;     // default cruise cap (rad/s); mirrors MOTION_VELOCITY_PRESETS[MOTION_VELOCITY_PRESET_DEFAULT]. Runtime override via motor_set_motion_velocity
+constexpr float    MOTION_VELOCITY    = 20.0f;     // default cruise cap (rad/s); mirrors MOTION_VELOCITY_PRESETS[MOTION_VELOCITY_PRESET_DEFAULT]. Runtime override via motor_set_motion_velocity
 constexpr float    MOTION_ACCEL       = 10.0f;      // rad/s² ramp + brake rate
 constexpr float    MOTION_EPS         = 0.5f;       // brake-on-reverse sign-change eps (rad/s)
 constexpr float    KNOB_STEP_RAD         = 6.2831853f;  // 1 motor rotation per detent
 
 // Triple-click cycles MOTION_VELOCITY through these presets; index is also the LED-pulse blink count - 1.
-constexpr float   MOTION_VELOCITY_PRESETS[]      = { 22.0f, 34.0f, 48.0f };   // top stays under VELOCITY_LIMIT so the setpoint is never clamped
+constexpr float   MOTION_VELOCITY_PRESETS[]      = { 20.0f, 31.0f, 43.0f };   // top stays under VELOCITY_LIMIT so the setpoint is never clamped
 constexpr uint8_t MOTION_VELOCITY_PRESET_COUNT   = sizeof(MOTION_VELOCITY_PRESETS) / sizeof(MOTION_VELOCITY_PRESETS[0]);
 constexpr uint8_t MOTION_VELOCITY_PRESET_DEFAULT = 0;
 
